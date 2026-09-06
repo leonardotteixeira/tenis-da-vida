@@ -1,125 +1,296 @@
-# Tênis da Vida
+# 🎾 TÊNIS DA VIDA
 
-A 2D pixel-art tennis game built from scratch with TypeScript and the HTML5 Canvas — arcade physics, a real deterministic rally, a manual two-step serve for the player, an automatic CPU opponent serve, and traditional tennis scoring, all covered by an automated test suite.
+Um jogo de tênis 2D em pixel art, construído do zero com **TypeScript** e **Canvas** — física arcade, rally jogável, saque manual com timing, adversária controlada por uma IA determinística, e pontuação inspirada no tênis real. Todo o núcleo de simulação é independente de renderização e coberto por testes automatizados.
 
-![Gameplay — a rally in progress](docs/screenshots/gameplay-serve-rally.png)
+![Rally em andamento](docs/screenshots/gameplay-serve-rally.png)
 
-## Live demo
+---
 
-Not deployed yet — runs locally (see [Running locally](#running-locally)). This section will be updated with a live link once the project is deployed.
+## 🖼️ O jogo por dentro
 
-## About
+### Quadra
 
-Leo and Alice play out a full tennis match — serve, rally, score — rendered as pixel art on a 2D canvas, viewed from the side (the net is vertical on screen, not horizontal). The project's goal was to build a genuinely playable arcade tennis game, not a tech demo: real ball physics (gravity, bounce, arc), a CPU opponent with difficulty-tuned prediction and error, and a scoring system that follows real tennis rules (0/15/30/40, deuce/advantage, games, sets), all driven by a framework-agnostic simulation core that's fully unit-tested independent of rendering.
+A quadra e o cenário são construídos a partir de arte real (grama, saibro, arquibancada, juiz), com as marcações (linhas de simples, duplas, saque) desenhadas programaticamente a partir de uma única fonte de geometria — não fazem parte da imagem de fundo.
 
-## Features
+![Arte de fundo da quadra](public/assets/court/COURT%201.png)
 
-- Playable rally: timing- and position-based hit detection, lateral aiming (hold A/D on contact), increasing ball speed as a rally goes on
-- Manual two-step serve for the player: toss, then a timed contact window (PERFECT / GOOD / fault), with A/D aiming
-- Automatic, deterministic serve for the CPU opponent — no keyboard dependency, no randomness in her timing
-- Deterministic CPU opponent: real trajectory prediction, per-difficulty position error and hit error (Easy / Normal / Hard / Insane)
-- Traditional tennis scoring — points, games (deuce/advantage), sets, full match — with correct server alternation and serve-side (deuce/ad court) alternation
-- Arcade projectile physics — gravity, bounce, arc — shared identically between rallies and serves (no duplicated physics)
-- Sprite-based character animation (idle / prepare / contact / recover / miss) for both players, synced to real engine events rather than a decorative timer
-- Real pixel-art court, drawn from a single geometric source of truth (not baked into a static image)
-- HUD with live score, rally counter, and per-shot PERFECT/GOOD/MISS feedback
+### Gameplay
 
-## Architecture
+<table>
+<tr>
+<td><img src="docs/screenshots/gameplay-court-overview.png" alt="Visão geral da quadra"/></td>
+<td><img src="docs/screenshots/gameplay-serve-rally.png" alt="Rally em andamento"/></td>
+</tr>
+<tr>
+<td align="center">Posição inicial, pronto para o saque</td>
+<td align="center">Rally real em andamento</td>
+</tr>
+</table>
 
-```text
-Input (keyboard)
-      ↓
-Game Engine (pure TypeScript, no React/DOM)
-      ↓
-Physics / Collision / CPU AI / Scoring
-      ↓
-Game State (snapshot)
-      ↓
-Rendering (React + Canvas 2D)
-```
+### HUD
 
-`game/` is the simulation core: it never imports React and knows nothing about the DOM. `components/` never computes physics or scoring — it only reads a snapshot from the engine (`GameEngine.getSnapshot()`) and calls `update()` every animation frame. That boundary is what makes the engine testable on its own (148 tests, zero browser dependency) and is enforced structurally, not just by convention.
+O painel de placar/feedback abaixo da quadra mostra nome, corações (sets), games, pontos e a qualidade do último golpe (PERFECT / GOOD / MISS / SAQUE) de cada jogador, além do contador de rally. A arte abaixo é o conceito original do painel de interface — os avatares dela são os únicos elementos reaproveitados no HUD final, que hoje é montado em CSS com os dados reais da partida (a arte completa do painel tinha números de exemplo embutidos que não davam para substituir de forma confiável — detalhes em `docs/PROGRESS.md`).
 
-## Technical highlights
+![Conceito do painel de interface](public/assets/HUD/derived/hud-bar.png)
 
-- **Deterministic simulation** — the engine takes an injectable `random()` function; every test (including 8000+-frame stress tests) runs with a fixed seed and produces identical results run to run.
-- **Explicit ball-ownership model** — `ball.owner` always names exactly one side responsible for the next hit; this single field is what the entire rally/serve/scoring state machine hinges on, and it's the thing the test suite checks most aggressively for edge cases.
-- **Single source of truth for court geometry** — every line, service box, and playable-bounds rectangle is derived from one geometry module (`game/court/geometry.ts`), not scattered magic numbers across rendering and collision code.
-- **Serve reuses rally physics, not a parallel system** — the toss is stepped through the same gravity integrator every rally shot uses; a successful serve contact calls the exact same shot-launch function a mid-rally hit does.
-- **Presentation-only animation state machines** — character animation reads before/after engine snapshots to detect real events (a hit, a miss, a serve) and never mutates or duplicates engine state.
-- **Regression-tested historical bugs** — two real bugs found via manual playtesting (a `delta time` sign bug that could freeze rendering on the first frame, and an OS key-repeat bug that could double-fire a serve/hit) both have dedicated, named regression tests, not just a fix.
-- **TypeScript throughout, strict mode, zero `any`** in the simulation core.
+### Personagens
 
-## Controls
+<table>
+<tr>
+<td><img src="public/assets/characters/leo/leo-forehand.png" alt="Leo" height="220"/></td>
+<td><img src="public/assets/characters/alice/alice-backhand.png" alt="Alice" height="220"/></td>
+</tr>
+<tr>
+<td align="center">Leo — controlado pelo jogador</td>
+<td align="center">Alice — adversária, controlada pela CPU</td>
+</tr>
+</table>
 
-```text
-A / D    — move (during rally, and while positioning to serve)
-SPACE    — serve / hit
-```
+### Sprite sheets
 
-Serving as Leo is a two-step motion: press **SPACE** once from "ready to serve" to start the toss (the ball rises into the air), then press **SPACE** again at the right moment to make contact — timing determines PERFECT / GOOD / fault, and holding A or D at the moment of contact aims the serve. During a rally, SPACE attempts a return only when the ball is actually in reach; press it once per attempt (holding it down does not repeat-fire).
+Os personagens foram fatiados a partir de sprite sheets reais — cada frame usado no jogo foi recortado com bounding box exata por canal alfa, documentado em `FRAME_MAP.md` dentro de cada pasta `derived/`.
 
-## Screenshots
+<table>
+<tr>
+<td><img src="public/assets/characters/leo/leo%20sprite%20sheet.png" alt="Sprite sheet do Leo"/></td>
+<td><img src="public/assets/characters/alice/ALICE%20SPRITE%20SHEET.png" alt="Sprite sheet da Alice"/></td>
+</tr>
+</table>
 
-| Court overview | Rally in progress |
+### Animações
+
+Cada personagem é uma pequena máquina de estados de apresentação (`idle → prepare → contact → recover → miss`), sincronizada a eventos reais do jogo — não é um timer decorativo. Exemplo com os frames reais do Leo:
+
+<table>
+<tr>
+<td><img src="public/assets/characters/leo/derived/idle-1.png" alt="idle" height="120"/></td>
+<td><img src="public/assets/characters/leo/derived/prepare-1.png" alt="prepare" height="120"/></td>
+<td><img src="public/assets/characters/leo/derived/forehand-contact.png" alt="contact" height="120"/></td>
+<td><img src="public/assets/characters/leo/derived/miss-1.png" alt="miss" height="120"/></td>
+</tr>
+<tr>
+<td align="center">idle</td>
+<td align="center">prepare</td>
+<td align="center">contact</td>
+<td align="center">miss</td>
+</tr>
+</table>
+
+A Alice usa o mesmo padrão, com um detalhe a mais: ela tem sequências completas de **forehand e backhand**, escolhidas em tempo real dependendo de que lado a bola chega.
+
+---
+
+## 🎨 Conceito visual
+
+Antes da câmera lateral (rede na vertical) usada no jogo final, o projeto passou por uma fase de referência visual com uma câmera tradicional de tênis. A imagem abaixo é arte de conceito dessa fase — não é uma captura do jogo final.
+
+![Referência visual inicial do projeto](docs/reference/gameplay-reference-v1-julia.png)
+
+---
+
+## 🎮 Como jogar
+
+| Tecla | Ação |
 |---|---|
-| ![Court overview, ready to serve](docs/screenshots/gameplay-court-overview.png) | ![A live rally, ball in flight](docs/screenshots/gameplay-serve-rally.png) |
+| `A` / `D` | Mover lateralmente |
+| `SPACE` | Sacar / Rebater |
 
-A third screenshot (the HUD mid-serve, showing the PERFECT/GOOD/fault feedback) still needs to be captured manually — the canvas alone can be exported programmatically, but the score/rally panel below it is separate HTML, not part of the canvas, so this is easiest with a normal OS-level screenshot while playing.
+**Saque do Leo** é um gesto em dois tempos:
 
-## Running locally
+```text
+SPACE  →  inicia o toss (a bola sobe)
+SPACE  →  realiza o contato (timing decide PERFECT / GOOD / falta)
+```
+
+Segurar `A` ou `D` no momento do contato direciona o saque. Depois disso, o rally é só reação:
+
+```text
+Alice devolve → Leo rebate → Alice devolve → ...
+```
+
+A Alice saca sozinha quando é a vez dela — sem depender de teclado.
+
+---
+
+## ✨ Funcionalidades
+
+- Quadra de tênis em pixel art, com geometria real (simples, duplas, linhas de saque)
+- Saque manual do Leo, com toss, janela de timing e mira lateral
+- Saque automático e determinístico da Alice
+- Rally jogável, com detecção de rebatida por posição, altura e timing
+- Física arcade de projétil (gravidade, arco, quique) — compartilhada entre saque e rally
+- IA adversária determinística, com previsão de trajetória e erro por dificuldade
+- Pontuação tradicional de tênis (0/15/30/40, deuce/vantagem, games, sets) com alternância correta de servidor e de lado de saque
+- Sistema de feedback PERFECT / GOOD / MISS por golpe
+- Animações de personagem sincronizadas a eventos reais do jogo
+- HUD com placar, corações de sets e contador de rally ao vivo
+
+---
+
+## 🧠 Engenharia por trás do jogo
+
+### Game Loop
+
+```text
+requestAnimationFrame
+      ↓
+delta time (dt)
+      ↓
+input
+      ↓
+game state (engine.update)
+      ↓
+physics / collision / IA
+      ↓
+render (Canvas + HUD)
+```
+
+O `dt` é sempre limitado a um intervalo seguro antes de chegar em qualquer outro sistema — isso não é só estilo, é resposta direta a um bug real (ver "🐛 Problemas encontrados durante o desenvolvimento" mais abaixo).
+
+### State Machine
+
+```text
+READY_TO_SERVE
+      ↓
+TOSS
+      ↓
+RALLY
+      ↓
+GAME_OVER
+```
+
+Cada fase da partida é um estado explícito — não existe um caminho de código onde o toss é interpretado como ponto, ou onde o rally começa sem um saque válido.
+
+### Ownership da bola
+
+A bola sempre pertence a exatamente um lado:
+
+```text
+Leo → Alice
+Alice → Leo
+```
+
+Esse único campo (`ball.owner`) é o que decide quem pode tentar a próxima rebatida — todo o resto (colisão, pontuação, fim de rally) deriva dele.
+
+### Física
+
+O saque **não tem uma física própria** — o toss usa o mesmo integrador de gravidade de qualquer bola em jogo, e o contato do saque chama exatamente a mesma função que lança qualquer golpe de rally. Isso evita duas fontes de verdade para o mesmo comportamento.
+
+### Collision / Hit Detection
+
+Uma tentativa de rebatida só é válida quando a bola está dentro de uma janela de distância, altura e lado da quadra ao mesmo tempo — não basta apertar a tecla no momento certo, é preciso também estar na posição certa.
+
+### IA
+
+A Alice **não usa machine learning**. É uma CPU determinística: prevê onde a bola vai cruzar a posição dela por extrapolação linear da trajetória, e aplica um erro de posição/execução calibrado por dificuldade. É uma decisão técnica deliberada, não uma limitação.
+
+---
+
+## 🧪 Qualidade e testes
+
+```text
+148 testes automatizados (Vitest)
+TypeScript em modo estrito
+ESLint
+Build de produção (Next.js)
+```
+
+Os testes cobrem, entre outras áreas: estado da partida, saque (Leo e Alice), rally, rebatida, física, pontuação, geometria da quadra, IA da Alice, animação, input de teclado e regressões de bugs históricos.
+
+---
+
+## 🛠️ Evolução do projeto
+
+```text
+01 — Geometria da quadra
+02 — Limites de movimento e correção da Alice
+03 — Redesenho visual da quadra
+04 — Animação dos personagens
+05 — Mecânica de saque
+06 — Correção de saque/rally/input (playtesting real)
+07 — Auditoria final e preparação de release
+```
+
+Histórico completo, incluindo o que foi tentado e não funcionou, em [`docs/PROGRESS.md`](docs/PROGRESS.md).
+
+---
+
+## 💡 Decisões interessantes
+
+- **Física compartilhada entre saque e rally** — nenhum sistema paralelo, o saque é só uma configuração inicial da mesma simulação.
+- **Estado do jogo independente do React** — `game/` nunca importa React; os componentes só leem um snapshot e chamam `update()`.
+- **Input discreto, não tecla continuamente pressionada** — uma pressão física gera no máximo uma ação, mesmo com repetição do sistema operacional.
+- **Geometria da quadra centralizada** — todas as linhas e limites jogáveis vêm de um único módulo, nunca de números soltos espalhados pelo código.
+- **Testes de regressão nomeados para bugs reais** — cada bug encontrado por playtesting virou um teste que impede a volta dele, não só uma correção silenciosa.
+
+---
+
+## 🐛 Problemas encontrados durante o desenvolvimento
+
+**Delta time negativo** — o primeiro frame do `requestAnimationFrame` podia, ocasionalmente, gerar um `dt` negativo e interromper a renderização logo no início da partida.
+
+**Key repeat** — seg segurar `SPACE` um pouco além do limiar de repetição do sistema operacional gerava múltiplas tentativas de saque/rebatida a partir de uma única pressão física.
+
+**Scroll do navegador** — `SPACE` não estava suprimindo o comportamento padrão do navegador, então a página rolava durante o jogo.
+
+**Rebatida no rally** — combinado com o bug de key repeat, uma tentativa de rebatida podia ser consumida antes da bola estar de fato no alcance, fazendo a rebatida "real" (quando a bola já estava perto) não registrar nada.
+
+Todos foram encontrados através de teste manual real no navegador — não só testes automatizados — e cada um recebeu um teste de regressão dedicado depois de corrigido.
+
+---
+
+## Estrutura do projeto
+
+```text
+app/          # rota Next.js (App Router)
+components/   # React + Canvas: render, HUD, menus, animação
+game/         # núcleo de simulação — TypeScript puro, sem React/DOM
+public/       # assets de pixel art
+docs/         # GAME_DESIGN.md, PROGRESS.md, referências e screenshots
+tests/        # 148 testes automatizados
+```
+
+---
+
+## ⚙️ Stack
+
+- TypeScript
+- Next.js
+- React
+- HTML Canvas
+- Tailwind CSS
+- Vitest
+- ESLint
+
+---
+
+## 🚀 Executando localmente
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Abra `http://localhost:3000`.
 
 ```bash
-npm test          # 148 automated tests (vitest)
-npm run typecheck # tsc --noEmit
-npm run lint       # eslint
-npm run build      # production build (next build)
+npm test
+npm run typecheck
+npm run lint
+npm run build
 ```
 
-## Project structure
+---
 
-```text
-game/                 # framework-agnostic simulation core (no React/DOM)
-  engine/              GameEngine — orchestrates one update(dt, input) tick
-  physics/              gravity/arc/bounce integrator
-  collision/            reach and hit-quality checks
-  cpu/                  Alice's deterministic AI
-  court/                 single source of truth for court geometry
-  serve/                serve-side rules and timing classification
-  scoring/               points/games/sets, traditional tennis rules
-  player/                 player movement
-  input/                  keyboard → InputState
-  difficulty/             per-difficulty tuning constants
-  types/                  shared types (BallState, PlayerState, GameSnapshot, ...)
-components/            React + Canvas rendering, HUD, menus, animation state machines
-tests/unit/            148 tests covering the engine, physics, AI, scoring, serve, input, animation
-docs/                  GAME_DESIGN.md (design decisions) and PROGRESS.md (full build history)
-public/assets/         pixel-art sprites and derived (extracted/processed) assets
-```
+## 📌 Limitações atuais
 
-## Development journey
+- Sem segundo saque / let — uma tentativa de saque por ponto, por decisão de escopo.
+- Sem colisão específica com a rede — nem no saque, nem no rally.
+- Controles apenas de teclado — sem suporte a mobile/touch.
+- Sem persistência entre sessões, sem seletor de dificuldade na interface.
 
-The game was built incrementally, each stage validated with both automated tests and real manual playtesting before moving to the next: court geometry → player movement bounds → visual court redesign → character animation → a full serve mechanic (toss, timing, CPU auto-serve) → a correction pass after real keyboard playtesting surfaced two input bugs a scripted test never would have. `docs/PROGRESS.md` has the complete, unedited history of every stage, including what was tried and didn't work.
+---
 
-## Known limitations
+## Assets e licença
 
-- **No second serve / let / advanced fault rules** — one serve attempt per point, simplified from official tennis rules by design.
-- **No dedicated serve animation for Alice** — her automatic serve reuses her regular forehand/backhand contact animation.
-- **No net-collision physics** — shots don't check whether they clip the net; this applies equally to rallies and serves (not a serve-specific gap).
-- **No mobile/touch controls** — keyboard only.
-- **Single match mode** — no difficulty selector in the UI yet (hardcoded to Normal), no persistence between sessions.
-
-## Assets
-
-The pixel-art sprites, court, menu, and UI art in `public/assets/` were AI-generated for this project. Some of that art depicts real third-party brand names and logos (visible on in-game signage, apparel, and equipment). Their inclusion was a deliberate visual-scope decision for this project, not an oversight — no license or endorsement from those trademark holders has been verified or obtained. If you fork or reuse this repository, review `public/assets/` yourself before redistributing it.
-
-## License
-
-Not yet decided — no `LICENSE` file exists in this repository yet.
+A arte em `public/assets/` foi gerada com IA para este projeto. Parte dela reproduz marcas reais de terceiros — isso foi mantido por decisão consciente de escopo visual, não é licenciamento verificado. Uma licença para o código ainda não foi definida.
