@@ -7,7 +7,7 @@ function ball(overrides: Partial<BallState> = {}): BallState {
 }
 
 function player(overrides: Partial<PlayerState> = {}): PlayerState {
-  return { side: "leo", x: 60, y: 250, isSwinging: false, lastShot: null, ...overrides };
+  return { side: "leo", x: 60, y: 250, vy: 0, lastShot: null, ...overrides };
 }
 
 describe("evaluateHitAttempt", () => {
@@ -16,11 +16,11 @@ describe("evaluateHitAttempt", () => {
   });
 
   it("returns good for a small X gap", () => {
-    expect(evaluateHitAttempt(ball({ x: 75, y: 250 }), player({ x: 60, y: 250 }))).toBe("good");
+    expect(evaluateHitAttempt(ball({ x: 90, y: 250 }), player({ x: 60, y: 250 }))).toBe("good");
   });
 
   it("returns late for a larger X gap still within range", () => {
-    expect(evaluateHitAttempt(ball({ x: 100, y: 250 }), player({ x: 60, y: 250 }))).toBe("late");
+    expect(evaluateHitAttempt(ball({ x: 115, y: 250 }), player({ x: 60, y: 250 }))).toBe("late");
   });
 
   it("returns miss when the X gap is too large", () => {
@@ -46,7 +46,7 @@ describe("hasBallPassedPlayer", () => {
   });
 
   it("alice: true once the ball is behind her baseline", () => {
-    expect(hasBallPassedPlayer(ball({ x: 1000 }), player({ x: 940, side: "alice" }), "alice")).toBe(true);
+    expect(hasBallPassedPlayer(ball({ x: 1010 }), player({ x: 940, side: "alice" }), "alice")).toBe(true);
   });
 });
 

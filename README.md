@@ -59,17 +59,19 @@ Os personagens foram fatiados a partir de sprite sheets reais — cada frame usa
 
 ### Animações
 
-Cada personagem é uma pequena máquina de estados de apresentação (`idle → prepare → contact → recover → miss`), sincronizada a eventos reais do jogo — não é um timer decorativo. Exemplo com os frames reais do Leo:
+Cada personagem é uma pequena máquina de estados de apresentação (`idle → walk/run → prepare → contact → recover → miss`, mais `celebrate` ao ganhar um ponto), sincronizada a eventos reais do jogo — não é um timer decorativo. O ciclo de caminhada/corrida avança por **distância percorrida** (a velocidade lateral real do motor), não por tempo, então os pés não deslizam. Exemplo com os frames reais do Leo:
 
 <table>
 <tr>
 <td><img src="public/assets/characters/leo/derived/idle-1.png" alt="idle" height="120"/></td>
+<td><img src="public/assets/characters/leo/derived/run-2.png" alt="run" height="120"/></td>
 <td><img src="public/assets/characters/leo/derived/prepare-1.png" alt="prepare" height="120"/></td>
 <td><img src="public/assets/characters/leo/derived/forehand-contact.png" alt="contact" height="120"/></td>
 <td><img src="public/assets/characters/leo/derived/miss-1.png" alt="miss" height="120"/></td>
 </tr>
 <tr>
 <td align="center">idle</td>
+<td align="center">run</td>
 <td align="center">prepare</td>
 <td align="center">contact</td>
 <td align="center">miss</td>
@@ -121,9 +123,14 @@ A Alice saca sozinha quando é a vez dela — sem depender de teclado.
 - Física arcade de projétil (gravidade, arco, quique) — compartilhada entre saque e rally
 - IA adversária determinística, com previsão de trajetória e erro por dificuldade
 - Pontuação tradicional de tênis (0/15/30/40, deuce/vantagem, games, sets) com alternância correta de servidor e de lado de saque
-- Sistema de feedback PERFECT / GOOD / MISS por golpe
-- Animações de personagem sincronizadas a eventos reais do jogo
-- HUD com placar, corações de sets e contador de rally ao vivo
+- Sistema de feedback PERFECT / GOOD / LATE / MISS por golpe — banner pixel-art sobre o jogador, faíscas de impacto, poeira no quique, sombra dinâmica e screen shake sutil no PERFECT do Leo
+- Movimento com aceleração/frenagem para os dois jogadores; Alice corre de verdade (frames de corrida/caminhada da sheet) e recupera para o centro entre golpes
+- Animações de personagem sincronizadas a eventos reais do jogo, incluindo comemoração de ponto
+- Áudio sintetizado (Web Audio, sem arquivos): raquete por qualidade do golpe, quique, erro, ponto, game e partida
+- Pausa (ESC / P) com continuar, reiniciar e voltar ao menu
+- Configurações de volume e dificuldade, persistidas no navegador
+- Resumo pós-partida (rally mais longo, aproveitamento, golpes por qualidade) com recordes persistidos
+- HUD com placar, corações de sets, contador de rally ao vivo e indicação de quem saca
 
 ---
 
@@ -189,7 +196,7 @@ A Alice **não usa machine learning**. É uma CPU determinística: prevê onde a
 ## 🧪 Qualidade e testes
 
 ```text
-148 testes automatizados (Vitest)
+202 testes automatizados (Vitest)
 TypeScript em modo estrito
 ESLint
 Build de produção (Next.js)
@@ -247,7 +254,7 @@ components/   # React + Canvas: render, HUD, menus, animação
 game/         # núcleo de simulação — TypeScript puro, sem React/DOM
 public/       # assets de pixel art
 docs/         # GAME_DESIGN.md, PROGRESS.md, referências e screenshots
-tests/        # 148 testes automatizados
+tests/        # 202 testes automatizados
 ```
 
 ---
@@ -287,7 +294,7 @@ npm run build
 - Sem segundo saque / let — uma tentativa de saque por ponto, por decisão de escopo.
 - Sem colisão específica com a rede — nem no saque, nem no rally.
 - Controles apenas de teclado — sem suporte a mobile/touch.
-- Sem persistência entre sessões, sem seletor de dificuldade na interface.
+- Persistência limitada a configurações e recordes (localStorage) — sem perfis nem histórico de partidas.
 
 ---
 

@@ -64,7 +64,10 @@ function PlayerPanel({
           <HeartRow sets={sets} />
           <span className="text-[10px] text-neutral-400">Games {games}</span>
         </div>
-        <span className="font-mono text-lg font-bold leading-none text-yellow-300">{points}</span>
+        {/* Re-keyed on every change so the pop animation restarts exactly when the score moves. */}
+        <span key={points} className="font-mono text-lg font-bold leading-none text-yellow-300 [animation:score-pop_320ms_ease-out]">
+          {points}
+        </span>
         {lastShot && <span className={`text-[10px] font-semibold ${QUALITY_COLOR[lastShot]}`}>{QUALITY_LABEL[lastShot]}</span>}
       </div>
     </div>
@@ -92,7 +95,7 @@ export function HUD({ snapshot }: { snapshot: GameSnapshot }) {
         <span className="font-mono text-2xl font-bold leading-none text-yellow-300">{rally.count}</span>
         <span className="text-[10px] text-neutral-500">Nível {rally.level}</span>
         {(phase === "ready_to_serve" || phase === "toss") && (
-          <span className="text-[10px] font-bold text-yellow-300">SAQUE</span>
+          <span className="text-[10px] font-bold text-yellow-300">SAQUE · {score.server === "leo" ? "LEO" : "ALICE"}</span>
         )}
         {phase === "game_over" && <span className="text-[10px] font-bold text-red-400">FIM</span>}
       </div>

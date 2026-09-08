@@ -38,6 +38,20 @@ larga do sheet. BACKHAND foi reconferido com o mesmo método e **tem mesmo os
 | `prepare-backhand-1.png` … `-3.png` | PREPARAÇÃO (BACKHAND), 3/3 | x≈922–1269, y≈265–433 | Não |
 | `backhand-1.png` … `-3.png`, `backhand-contact.png` | BACKHAND, 4/4 | x≈1279–1765, y≈265–433 | Não |
 | `miss-1.png`, `miss-2.png` | ERRO/MISS, 2/2 (a sheet só tem 2, não 3 como o Leo) | x≈16–234, y≈734–873 | Sim |
+| `walk-1.png` … `walk-5.png` | CAMINHADA, 5/5 (polish pass) | x≈695–1209, y≈51–212 | Não (já vira para a esquerda) |
+| `run-1.png` … `run-4.png` | CORRIDA, 4/4 (polish pass) | x≈1235–1772, y≈50–212 | Não (já vira para a esquerda) |
+| `celebrate-1.png`, `celebrate-2.png` | COMEMORAÇÃO, frames 1–2 de 4 (3 e 4 estão fundidos entre si — braços erguidos se tocam — e foram descartados) | x≈263–444, y≈737–870 | Não (pose frontal) |
+
+## Polish pass: CAMINHADA, CORRIDA e COMEMORAÇÃO
+
+Extraídos por componente conectado do canal alpha (`scipy.ndimage.label`,
+limiar 40/255, dilatação de 2px para recuperar as bordas suaves), **não por
+bbox retangular**: os frames de CORRIDA se intercalam horizontalmente
+(bbox do frame 2 começa antes do fim do bbox do frame 1), então cada PNG
+derivado contém só os pixels do seu próprio componente — nenhum pedaço da
+pose vizinha. Uso em jogo: `components/playerAnimation.ts` — o ciclo de
+caminhada/corrida avança por **distância percorrida** (`vy` do motor), não
+por tempo, para os pés não deslizarem.
 
 ## Limitação conhecida e aceita: leve "eco" de raquete em `forehand-2` e `forehand-contact`
 

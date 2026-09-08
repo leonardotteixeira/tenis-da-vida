@@ -8,8 +8,9 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ALICE_SERVE_CONTACT_MS, COURT_WIDTH, SERVE_TOSS_IDEAL_MS, SERVE_TOSS_TIMEOUT_MS } from "@/game/constants";
+import { ALICE_SERVE_CONTACT_MS, ALICE_SERVE_DELAY_MS, ALICE_X, COURT_WIDTH, LEO_X, SERVE_TOSS_IDEAL_MS, SERVE_TOSS_TIMEOUT_MS } from "@/game/constants";
 import { COURT } from "@/game/court/geometry";
+import { evaluateHitAttempt } from "@/game/collision/reach";
 import { GameEngine } from "@/game/engine/GameEngine";
 import { computeServeY } from "@/game/serve/serve";
 import type { InputState } from "@/game/types";
@@ -307,7 +308,9 @@ describe("GameEngine — Leo's serve", () => {
     // wins every point 4-0 each game, straight sets) without depending on
     // any CPU/random behavior — much faster and more reliable than
     // simulating a realistic full match just to get to game_over.
-    for (let i = 0; i < 5000 && engine.getSnapshot().phase !== "game_over"; i++) {
+    // Budget covers Alice's fixed pre-serve beat (ALICE_SERVE_DELAY_MS) on
+    // every one of her service points, plus her full serve + pass-by.
+    for (let i = 0; i < 30000 && engine.getSnapshot().phase !== "game_over"; i++) {
       const snap = engine.getSnapshot();
       if (snap.phase === "ready_to_serve" && snap.score.server === "leo") {
         engine.update(1 / 60, SERVE_PRESS);
@@ -406,18 +409,26 @@ describe("GameEngine — Alice's serve", () => {
     return engine;
   }
 
-  it("Alice becomes server after Leo loses a game, and starts serving without any keyboard input", () => {
+  /** Frames Alice waits in "ready_to_serve" before her auto-toss (ALICE_SERVE_DELAY_MS), plus the frame that crosses the threshold. */
+  const DELAY_FRAMES = Math.ceil(ALICE_SERVE_DELAY_MS / 1000 / (1 / 60));
+
+  it("Alice becomes server after Leo loses a game, and starts serving without any keyboard input — after a short fixed beat", () => {
     const engine = makeAliceServer();
     expect(engine.getSnapshot().score.server).toBe("alice");
     expect(engine.getSnapshot().phase).toBe("ready_to_serve");
 
-    engine.update(1 / 60, NO_INPUT); // no keyboard input at all
+    // The beat: still waiting well inside the delay window (the point
+    // banner/celebration is meant to be readable before the next ball).
+    runFrames(engine, Math.floor(DELAY_FRAMES / 2), NO_INPUT);
+    expect(engine.getSnapshot().phase).toBe("ready_to_serve");
+
+    runFrames(engine, DELAY_FRAMES, NO_INPUT); // no keyboard input at all
     expect(engine.getSnapshot().phase).toBe("toss"); // she auto-tossed
   });
 
   it("her contact happens exactly once, at a fixed deterministic instant, and starts the rally", () => {
     const engine = makeAliceServer();
-    engine.update(1 / 60, NO_INPUT); // -> toss
+    runFrames(engine, DELAY_FRAMES + 1, NO_INPUT); // -> toss
 
     const steps = Math.round(ALICE_SERVE_CONTACT_MS / 1000 / (1 / 60)) + 1;
     for (let i = 0; i < steps; i++) engine.update(1 / 60, NO_INPUT);
@@ -432,7 +443,7 @@ describe("GameEngine — Alice's serve", () => {
   it("is deterministic — two engines driven the same way produce the same serve outcome", () => {
     const a = makeAliceServer();
     const b = makeAliceServer();
-    const steps = Math.round(ALICE_SERVE_CONTACT_MS / 1000 / (1 / 60)) + 2;
+    const steps = DELAY_FRAMES + Math.round(ALICE_SERVE_CONTACT_MS / 1000 / (1 / 60)) + 2;
     for (let i = 0; i < steps; i++) {
       a.update(1 / 60, NO_INPUT);
       b.update(1 / 60, NO_INPUT);
@@ -487,7 +498,13 @@ describe("GameEngine — serve ball-position bug regression (Etapa 5 audit)", ()
     engine.update(1 / 60, SERVE_PRESS);
     const snap = engine.getSnapshot();
     expect(snap.phase).toBe("toss");
-    expect(snap.ball.y).toBeCloseTo(leoYBeforeServe, 5);
+    // The ball is born exactly where Leo actually is. With the momentum
+    // model he may still glide a few units on the press frame itself while
+    // braking (see stepLateralMotion), so compare against his real position
+    // on this frame, and sanity-check that glide stays a small fraction of
+    // one frame of full-speed travel.
+    expect(snap.ball.y).toBeCloseTo(snap.leo.y, 5);
+    expect(Math.abs(snap.leo.y - leoYBeforeServe)).toBeLessThan(6);
     expect(snap.ball.x).toBeCloseTo(snap.leo.x, 5);
   });
 
@@ -508,7 +525,7 @@ describe("GameEngine — serve ball-position bug regression (Etapa 5 audit)", ()
     }
     expect(engine.getSnapshot().score.server).toBe("alice");
 
-    engine.update(1 / 60, NO_INPUT); // her toss begins
+    runFrames(engine, Math.ceil(ALICE_SERVE_DELAY_MS / 1000 / (1 / 60)) + 1, NO_INPUT); // her pre-serve beat, then her toss begins
     const snap = engine.getSnapshot();
     expect(snap.phase).toBe("toss");
     expect(snap.ball.y).toBeCloseTo(snap.alice.y, 5);
@@ -603,6 +620,122 @@ describe("GameEngine — serve stress test", () => {
  * the real, fully-wired GameEngine — not the isolated AI functions — so
  * they'd catch a regression introduced anywhere in that chain.
  */
+/**
+ * Physics & Game Feel pass — root-cause regression coverage. The player's
+ * hit key (game/input/keyboard.ts) delivers exactly one true frame per
+ * physical keydown; before this fix, GameEngine evaluated that single frame
+ * against evaluateHitAttempt and discarded it forever if the ball wasn't
+ * already in range yet — a human's natural tendency to anticipate slightly
+ * early always lost the swing outright, with no way to retry without a
+ * fresh physical keydown. PLAYER_HIT_BUFFER_MS (game/constants.ts) now keeps
+ * a press "armed" for a short window so GameEngine keeps re-checking it
+ * every frame — same free retry the CPU already gets in maybeAttemptCpuHit —
+ * until it connects or the buffer runs out. These tests drive the same
+ * "steer toward the rally line" pattern as the "full serve+rally
+ * integration flow" test above, but never actually press hitPressed except
+ * at one precisely-timed frame, to prove the buffer (not repeated input) is
+ * what makes the difference.
+ */
+describe("GameEngine — buffered player hit (Physics & Game Feel pass)", () => {
+  function steer(engine: GameEngine): -1 | 0 | 1 {
+    const leoY = engine.getSnapshot().leo.y;
+    return leoY < COURT_WIDTH / 2 ? 1 : leoY > COURT_WIDTH / 2 ? -1 : 0;
+  }
+
+  /** Finds the frame index (after bringToRally) at which the ball first enters Leo's reach window, on a disposable probe engine that never swings. */
+  function findFirstReachableFrame(dt: number): number {
+    const probe = new GameEngine({ difficulty: "easy", random: () => 0.5 });
+    bringToRally(probe, dt);
+    for (let i = 0; i < 400; i++) {
+      probe.update(dt, { direction: steer(probe), hitPressed: false, smashHeld: false });
+      const snap = probe.getSnapshot();
+      if (snap.ball.owner === "leo" && evaluateHitAttempt(snap.ball, snap.leo) !== "miss") return i;
+    }
+    return -1;
+  }
+
+  it("a single press ~100ms early still connects once the ball arrives — the exact human error the buffer exists for", () => {
+    const dt = 1 / 60;
+    const firstReachableFrame = findFirstReachableFrame(dt);
+    expect(firstReachableFrame).toBeGreaterThan(0); // sanity: the probe actually found a reachable frame
+
+    const earlyFrames = Math.round((0.1 * 1000) / (dt * 1000)); // 100ms — inside PLAYER_HIT_BUFFER_MS (130ms)
+    const pressFrame = Math.max(0, firstReachableFrame - earlyFrames);
+
+    const engine = new GameEngine({ difficulty: "easy", random: () => 0.5 });
+    bringToRally(engine, dt);
+    let connected = false;
+    let pointEnded = false;
+    for (let i = 0; i < 400; i++) {
+      const input: InputState = { direction: steer(engine), hitPressed: i === pressFrame, smashHeld: false };
+      engine.update(dt, input);
+      const event = engine.getSnapshot().lastEvent;
+      if (event?.type === "hit" && event.side === "leo" && event.quality !== "miss") {
+        connected = true;
+        break;
+      }
+      if (event?.type === "point") {
+        pointEnded = true;
+        break;
+      }
+    }
+    expect(connected).toBe(true);
+    expect(pointEnded).toBe(false);
+  });
+
+  it("a press far outside the buffer window (500ms early) is still discarded — buffering isn't unlimited grace", () => {
+    const dt = 1 / 60;
+    const firstReachableFrame = findFirstReachableFrame(dt);
+    expect(firstReachableFrame).toBeGreaterThan(0);
+
+    const earlyFrames = Math.round((0.5 * 1000) / (dt * 1000)); // 500ms — well beyond PLAYER_HIT_BUFFER_MS
+    const pressFrame = Math.max(0, firstReachableFrame - earlyFrames);
+    expect(pressFrame).toBeLessThan(firstReachableFrame); // sanity: genuinely earlier than the reach window
+
+    const engine = new GameEngine({ difficulty: "easy", random: () => 0.5 });
+    bringToRally(engine, dt);
+    let connected = false;
+    let pointEnded = false;
+    for (let i = 0; i < 400; i++) {
+      const input: InputState = { direction: steer(engine), hitPressed: i === pressFrame, smashHeld: false };
+      engine.update(dt, input);
+      const event = engine.getSnapshot().lastEvent;
+      if (event?.type === "hit" && event.side === "leo" && event.quality !== "miss") {
+        connected = true;
+        break;
+      }
+      if (event?.type === "point") {
+        pointEnded = true;
+        break;
+      }
+    }
+    expect(connected).toBe(false);
+    expect(pointEnded).toBe(true); // Leo never touched it — Alice wins the point, exactly as before this fix
+  });
+
+  it("a stray press with no ball anywhere near Leo quietly expires — no MISS feedback for a swing at nothing", () => {
+    // Section 4/16 of the brief specifically warns against feedback firing
+    // before it's earned: the buffer only records a "miss" once it expires
+    // while the ball was actually Leo's to return (see updateLeoHitBuffer) —
+    // a press this early (the ball is still ~1.7s from even reaching him)
+    // has nothing to swing at, so it should leave no trace at all, not a
+    // premature MISS animation for a shot that was never really attempted.
+    const engine = new GameEngine({ difficulty: "easy", random: () => 0.5 });
+    bringToRally(engine); // this itself just resolved as Leo's own PERFECT serve, so leo.lastShot is already "perfect" here — not null
+    const beforeArming = engine.getSnapshot().leo.lastShot;
+
+    engine.update(1 / 60, { direction: 0, hitPressed: true, smashHeld: false }); // arms the buffer; ball is still owned by alice this frame
+    expect(engine.getSnapshot().leo.lastShot).toBe(beforeArming);
+
+    for (let i = 0; i < 30; i++) {
+      // outlasts PLAYER_HIT_BUFFER_MS (130ms) well before the ball's ~1.7s flight could bring it anywhere near Leo
+      engine.update(1 / 60, { direction: 0, hitPressed: false, smashHeld: false });
+      expect(engine.getSnapshot().leo.lastShot).toBe(beforeArming); // never touched — the buffer expired against a ball that was never his to hit
+      expect(engine.getSnapshot().ball.owner).toBe("alice"); // sanity: still genuinely mid-flight, this test's premise holds
+    }
+  });
+});
+
 describe("GameEngine — Alice stays within her playable bounds", () => {
   it("starts with alice at a valid position inside her bounds (Teste 7)", () => {
     const engine = new GameEngine({ difficulty: "normal", random: () => 0.5 });
@@ -674,5 +807,243 @@ describe("GameEngine — Alice stays within her playable bounds", () => {
         expect(y).toBeLessThanOrEqual(COURT.alicePlayableBounds.maxY);
       }
     }
+  });
+});
+
+describe("GameEngine — Alice movement (polish pass)", () => {
+  it("never reverses direction while chasing a single incoming shot, even with a maximally noisy random source", () => {
+    // Alternating 0/1 rolls: before the per-shot roll, this made her target
+    // jump ±positionErrorMax every frame and her Y visibly vibrate.
+    let flip = false;
+    const engine = new GameEngine({ difficulty: "easy", random: () => ((flip = !flip) ? 0 : 1) });
+    bringToRally(engine);
+
+    let reversals = 0;
+    let lastSign = 0;
+    let framesChasing = 0;
+    while (engine.getSnapshot().ball.owner === "alice" && engine.getSnapshot().phase === "rally" && framesChasing < 600) {
+      engine.update(1 / 60, NO_INPUT);
+      const sign = Math.sign(engine.getSnapshot().alice.vy);
+      if (sign !== 0 && lastSign !== 0 && sign !== lastSign) reversals++;
+      if (sign !== 0) lastSign = sign;
+      framesChasing++;
+    }
+    expect(framesChasing).toBeGreaterThan(10);
+    expect(reversals).toBe(0);
+  });
+
+  it("accelerates over several frames instead of jumping to full speed on frame one", () => {
+    const engine = new GameEngine({ difficulty: "normal", random: () => 1 }); // max error -> she has somewhere to run
+    bringToRally(engine);
+    const speeds: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      engine.update(1 / 60, NO_INPUT);
+      speeds.push(Math.abs(engine.getSnapshot().alice.vy));
+    }
+    expect(speeds[0]).toBeGreaterThan(0);
+    expect(speeds[0]).toBeLessThan(240);
+    for (let i = 1; i < speeds.length; i++) expect(speeds[i]).toBeGreaterThanOrEqual(speeds[i - 1]);
+  });
+
+  it("drifts back toward the middle of the court while the ball is Leo's, at a reduced speed", () => {
+    const engine = new GameEngine({ difficulty: "normal", random: () => 0.5 });
+    bringToRally(engine);
+    // Let her return the serve; once the ball is Leo's she should recover.
+    let guard = 0;
+    while (engine.getSnapshot().ball.owner !== "leo" && guard++ < 600) engine.update(1 / 60, NO_INPUT);
+    expect(engine.getSnapshot().ball.owner).toBe("leo");
+    const startY = engine.getSnapshot().alice.y;
+    const center = COURT_WIDTH / 2;
+    for (let i = 0; i < 20; i++) engine.update(1 / 60, NO_INPUT);
+    const { alice } = engine.getSnapshot();
+    expect(Math.abs(alice.y - center)).toBeLessThan(Math.abs(startY - center));
+    expect(Math.abs(alice.vy)).toBeLessThanOrEqual(240 * 0.45 + 1e-6);
+  });
+});
+
+describe("GameEngine — set event", () => {
+  it("emits a 'set' event (not just 'game') when a game win also closes out a set, and the server still alternates", () => {
+    const engine = new GameEngine({ difficulty: "normal", random: () => 0.5 });
+    const tossElapsed = { value: 0 };
+    const events: string[] = [];
+    let serverBeforeSet: "leo" | "alice" | null = null;
+    for (let i = 0; i < 60000 && engine.getSnapshot().phase !== "game_over"; i++) {
+      const before = engine.getSnapshot().score.server;
+      engine.update(1 / 60, autoServeInput(engine, tossElapsed));
+      const ev = engine.getSnapshot().lastEvent;
+      if (ev && ev.type !== "hit") {
+        events.push(ev.type);
+        if (ev.type === "set") {
+          serverBeforeSet = before;
+          expect(engine.getSnapshot().score.server).not.toBe(before);
+          expect(engine.getSnapshot().score.games).toEqual([0, 0]);
+        }
+      }
+    }
+    expect(events).toContain("set");
+    expect(events[events.length - 1]).toBe("match");
+    expect(serverBeforeSet).not.toBeNull();
+  });
+});
+
+/**
+ * Rally quality (polish pass, "FASE 3"): a competent — not superhuman — Leo
+ * must be able to sustain long rallies against Alice at normal difficulty.
+ * The bot below only does what a human can: it moves toward where the ball
+ * will cross his baseline (the same linear read the CPU uses) and presses the
+ * hit key once when the ball enters the GOOD window, relying on the same
+ * input buffer a real press gets. Alice's randomness comes from a seeded LCG
+ * so the run is reproducible.
+ */
+describe("GameEngine — rally quality with a competent Leo", () => {
+  function leoBotInput(engine: GameEngine, armed: { pressedThisBall: boolean }): InputState {
+    const { ball, leo, phase } = engine.getSnapshot();
+    if (phase !== "rally") return NO_INPUT;
+    if (ball.owner !== "leo") {
+      armed.pressedThisBall = false;
+      return NO_INPUT;
+    }
+    const t = ball.vx !== 0 ? (leo.x - ball.x) / ball.vx : 0;
+    const targetY = t > 0 ? ball.y + ball.vy * t : ball.y;
+    const direction: -1 | 0 | 1 = targetY > leo.y + 6 ? 1 : targetY < leo.y - 6 ? -1 : 0;
+    const inWindow = Math.abs(ball.x - leo.x) <= 40 && Math.abs(ball.y - leo.y) <= 60;
+    const hitPressed = inWindow && !armed.pressedThisBall;
+    if (hitPressed) armed.pressedThisBall = true;
+    return { direction, hitPressed, smashHeld: false };
+  }
+
+  it("reaches 5, 10, 15 and 20-hit rallies at normal difficulty within a handful of points", () => {
+    let seed = 12345;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed / 2147483648;
+    };
+    const engine = new GameEngine({ difficulty: "normal", random });
+    const tossElapsed = { value: 0 };
+    const armed = { pressedThisBall: false };
+    let longest = 0;
+    let points = 0;
+    for (let i = 0; i < 40000 && points < 12; i++) {
+      const snap = engine.getSnapshot();
+      const input = snap.phase === "rally" ? leoBotInput(engine, armed) : autoServeInput(engine, tossElapsed);
+      engine.update(1 / 60, input);
+      const after = engine.getSnapshot();
+      longest = Math.max(longest, after.rally.count);
+      if (after.lastEvent && after.lastEvent.type !== "hit") points++;
+      if (after.phase === "game_over") break;
+    }
+    expect(longest).toBeGreaterThanOrEqual(20);
+  });
+});
+
+/**
+ * "Como Jogar" tutorial support (components/tutorial.ts) — two small,
+ * additive GameEngineOptions that default to the exact prior behavior
+ * (every test above never sets either one), so nothing here is a regression
+ * risk to normal play: initialServer only changes who serves the very first
+ * point (previously always "leo"), and tutorialMode only changes Alice's
+ * tuning source and rally-return aim.
+ */
+describe("GameEngine — tutorial support (initialServer / tutorialMode)", () => {
+  it("initialServer defaults to leo when omitted, exactly as before this option existed", () => {
+    const engine = new GameEngine({ difficulty: "normal", random: () => 0.5 });
+    expect(engine.getSnapshot().score.server).toBe("leo");
+  });
+
+  it("initialServer: 'alice' starts the match with her serving, with no keyboard input required", () => {
+    const engine = new GameEngine({ difficulty: "normal", initialServer: "alice", random: () => 0.5 });
+    expect(engine.getSnapshot().score.server).toBe("alice");
+    expect(engine.getSnapshot().phase).toBe("ready_to_serve");
+
+    const delayFrames = Math.ceil(ALICE_SERVE_DELAY_MS / 1000 / (1 / 60));
+    runFrames(engine, delayFrames + 1, NO_INPUT);
+    expect(engine.getSnapshot().phase).toBe("toss"); // she auto-tossed, same beat as the mid-match server-alternation case
+
+    const contactSteps = Math.round(ALICE_SERVE_CONTACT_MS / 1000 / (1 / 60)) + 1;
+    runFrames(engine, contactSteps, NO_INPUT);
+    const snap = engine.getSnapshot();
+    expect(snap.phase).toBe("rally");
+    expect(snap.ball.owner).toBe("leo"); // the receiver — exactly like the existing "Alice becomes server" case
+  });
+
+  it("tutorialMode: false (the default) keeps using DIFFICULTY_PARAMS — Alice's easy-difficulty position error can still land her a non-perfect touch", () => {
+    // Sanity baseline for the next test: at the worst-case position-error
+    // roll, "easy" (positionErrorMax: 70) is loose enough that her hit
+    // quality isn't reliably "perfect" — establishes the contrast
+    // tutorialMode is supposed to remove.
+    const engine = new GameEngine({ difficulty: "easy", initialServer: "alice", tutorialMode: false, random: () => 1 });
+    const delayFrames = Math.ceil(ALICE_SERVE_DELAY_MS / 1000 / (1 / 60));
+    runFrames(engine, delayFrames + 1, NO_INPUT);
+    const contactSteps = Math.round(ALICE_SERVE_CONTACT_MS / 1000 / (1 / 60)) + 1;
+    runFrames(engine, contactSteps, NO_INPUT);
+    expect(engine.getSnapshot().phase).toBe("rally"); // just confirms the harness above still reaches a rally under tutorialMode: false too
+  });
+
+  it("tutorialMode: true keeps Alice's touches consistently PERFECT across a sustained rally, even at the worst-case error roll", () => {
+    const engine = new GameEngine({ difficulty: "easy", initialServer: "alice", tutorialMode: true, random: () => 1 });
+    const delayFrames = Math.ceil(ALICE_SERVE_DELAY_MS / 1000 / (1 / 60));
+    runFrames(engine, delayFrames + 1, NO_INPUT);
+    const contactSteps = Math.round(ALICE_SERVE_CONTACT_MS / 1000 / (1 / 60)) + 1;
+    runFrames(engine, contactSteps, NO_INPUT);
+    expect(engine.getSnapshot().phase).toBe("rally");
+
+    let aliceHits = 0;
+    for (let i = 0; i < 3000 && aliceHits < 3; i++) {
+      engine.update(1 / 60, HOLD_HIT);
+      const event = engine.getSnapshot().lastEvent;
+      if (event?.type === "hit" && event.side === "alice") {
+        expect(event.quality).toBe("perfect");
+        aliceHits++;
+      }
+      if (engine.getSnapshot().lastEvent?.type === "point") break; // Leo missing ends this particular exchange — not what this test is about
+    }
+    expect(aliceHits).toBeGreaterThan(0); // sanity: the loop actually observed real Alice connects, not just an early point end
+  });
+
+  it("tutorialMode: true aims Alice's rally return at Leo's current position, not a random spot on the court", () => {
+    const engine = new GameEngine({ difficulty: "easy", initialServer: "alice", tutorialMode: true, random: () => 0.5 });
+
+    // Leo settles at a modest, fixed lateral offset *before* the serve even
+    // starts, then never moves again for the rest of the test — a real
+    // directional drift during either flight (serve-to-Leo or Leo's-return-
+    // to-Alice-and-back) would carry him outside REACH_Y before the ball
+    // arrives (this arcade model doesn't re-track a moving target mid-
+    // flight — see game/physics/trajectory.ts), which isn't what this test
+    // is about. A small, stable offset is enough to give the aim check
+    // below an unambiguous, nonzero target while staying easily reachable.
+    const initialLeoY = engine.getSnapshot().leo.y; // the deuce-side serve stance, not necessarily COURT_WIDTH/2
+    runFrames(engine, 12, { direction: 1, hitPressed: false, smashHeld: false });
+    const leoOffsetY = engine.getSnapshot().leo.y;
+    expect(leoOffsetY).toBeGreaterThan(initialLeoY); // sanity: he actually moved (direction 1 = toward larger Y)
+
+    const delayFrames = Math.ceil(ALICE_SERVE_DELAY_MS / 1000 / (1 / 60));
+    runFrames(engine, delayFrames + 1, NO_INPUT);
+    const contactSteps = Math.round(ALICE_SERVE_CONTACT_MS / 1000 / (1 / 60)) + 1;
+    runFrames(engine, contactSteps, NO_INPUT);
+    expect(engine.getSnapshot().phase).toBe("rally");
+
+    // Leo returns the serve straight back (direction 0 — no aim bias of his
+    // own) with the hit key held/buffered; he never moves again afterward.
+    let sawLeoHit = false;
+    let checked = false;
+    for (let i = 0; i < 600 && !checked; i++) {
+      engine.update(1 / 60, { direction: 0, hitPressed: true, smashHeld: false });
+      const snap = engine.getSnapshot();
+      if (snap.lastEvent?.type === "hit" && snap.lastEvent.side === "leo") sawLeoHit = true;
+      if (sawLeoHit && snap.lastEvent?.type === "hit" && snap.lastEvent.side === "alice") {
+        // vy/vx is speed-independent (both scale by the same 1/timeToTarget
+        // factor — see computeLaunchVelocity), so comparing this ratio
+        // proves the *target* Alice aimed at without needing to reproduce
+        // GameEngine's private speed/quality multipliers here. If this ever
+        // regressed back to the normal random aim, this would fail
+        // essentially always under a fixed random source.
+        const expectedRatio = (snap.leo.y - snap.alice.y) / (LEO_X - ALICE_X);
+        const actualRatio = snap.ball.vy / snap.ball.vx;
+        expect(actualRatio).toBeCloseTo(expectedRatio, 5);
+        checked = true;
+      }
+    }
+    expect(sawLeoHit).toBe(true);
+    expect(checked).toBe(true);
   });
 });

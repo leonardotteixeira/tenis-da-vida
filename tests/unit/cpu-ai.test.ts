@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeCpuTargetY, moveToward, predictInterceptY } from "@/game/cpu/ai";
+import { computeCpuTargetY, predictInterceptY } from "@/game/cpu/ai";
 import { COURT } from "@/game/court/geometry";
 import { DIFFICULTY_PARAMS, applyHitError } from "@/game/difficulty/params";
 import type { BallState, PlayerState } from "@/game/types";
@@ -28,11 +28,21 @@ describe("predictInterceptY", () => {
 });
 
 describe("computeCpuTargetY", () => {
-  const alice: PlayerState = { side: "alice", x: 940, y: 250, isSwinging: false, lastShot: null };
+  const alice: PlayerState = { side: "alice", x: 940, y: 250, vy: 0, lastShot: null };
 
-  it("holds position when the ball isn't headed to alice", () => {
-    const result = computeCpuTargetY(ball({ owner: "leo" }), alice, DIFFICULTY_PARAMS.normal, 0.5, ALICE_BOUNDS);
-    expect(result).toBe(alice.y);
+  it("recovers toward the lateral middle of the court when the ball isn't headed to alice (ready position between shots)", () => {
+    const center = (ALICE_BOUNDS.minY + ALICE_BOUNDS.maxY) / 2;
+    const wide: PlayerState = { ...alice, y: ALICE_BOUNDS.maxY - 20 };
+    expect(computeCpuTargetY(ball({ owner: "leo" }), wide, DIFFICULTY_PARAMS.normal, 0.5, ALICE_BOUNDS)).toBe(center);
+    expect(computeCpuTargetY(ball({ owner: "leo" }), alice, DIFFICULTY_PARAMS.normal, 0.5, ALICE_BOUNDS)).toBe(center);
+  });
+
+  it("gives the same target every frame for the same roll — the per-shot roll is what keeps her from vibrating around the ball", () => {
+    const incoming = ball({ owner: "alice", x: 500, y: 300, vx: 400, vy: 20 });
+    const a = computeCpuTargetY(incoming, alice, DIFFICULTY_PARAMS.easy, 0.9, ALICE_BOUNDS);
+    const b = computeCpuTargetY(incoming, alice, DIFFICULTY_PARAMS.easy, 0.9, ALICE_BOUNDS);
+    expect(a).toBe(b);
+    expect(computeCpuTargetY(incoming, alice, DIFFICULTY_PARAMS.easy, 0.1, ALICE_BOUNDS)).not.toBe(a);
   });
 
   it("adds no error when randomError is exactly 0.5 (midpoint)", () => {
@@ -78,10 +88,11 @@ describe("computeCpuTargetY", () => {
     }
   });
 
-  it("clamps the fallback (ball not headed to alice) if her current position is somehow already invalid (Teste 6)", () => {
+  it("keeps the fallback (ball not headed to alice) inside bounds even if her current position is somehow already invalid (Teste 6)", () => {
     const outOfBoundsAlice: PlayerState = { ...alice, y: ALICE_BOUNDS.maxY + 500 };
     const result = computeCpuTargetY(ball({ owner: "leo" }), outOfBoundsAlice, DIFFICULTY_PARAMS.normal, 0.5, ALICE_BOUNDS);
-    expect(result).toBe(ALICE_BOUNDS.maxY);
+    expect(result).toBeGreaterThanOrEqual(ALICE_BOUNDS.minY);
+    expect(result).toBeLessThanOrEqual(ALICE_BOUNDS.maxY);
   });
 
   it("historical regression: predictedY=0, error=-max and predictedY=width, error=+max both used to escape the court — now both land exactly on the boundary", () => {
@@ -92,23 +103,6 @@ describe("computeCpuTargetY", () => {
     // width + positionErrorMax (> width) respectively.
     expect(belowCase).toBe(ALICE_BOUNDS.minY);
     expect(aboveCase).toBe(ALICE_BOUNDS.maxY);
-  });
-});
-
-describe("moveToward", () => {
-  it("moves at most maxSpeed*dt per call", () => {
-    const result = moveToward(0, 1000, 100, 1);
-    expect(result).toBe(100);
-  });
-
-  it("snaps to target without overshooting when close enough", () => {
-    const result = moveToward(95, 100, 100, 1);
-    expect(result).toBe(100);
-  });
-
-  it("moves negative direction correctly", () => {
-    const result = moveToward(100, 0, 50, 1);
-    expect(result).toBe(50);
   });
 });
 

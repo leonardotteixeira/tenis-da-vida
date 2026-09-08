@@ -8,10 +8,18 @@
 
 import {
   ALICE_SERVE_CONTACT_MS,
+  ALICE_SERVE_DELAY_MS,
   ALICE_X,
   BASE_BALL_SPEED,
   COURT_WIDTH,
+  CPU_ACCEL,
+  CPU_ARRIVE_EPSILON,
+  CPU_BRAKE_TIME,
+  CPU_RECOVERY_SPEED_RATIO,
   LEO_X,
+  PLAYER_ACCEL,
+  PLAYER_HIT_BUFFER_MS,
+  PLAYER_MOVE_SPEED,
   REACH_X_PERFECT,
   SERVE_TOSS_TIMEOUT_MS,
   SERVE_TOSS_VZ,
@@ -19,9 +27,9 @@ import {
 import { COURT, clampToBounds } from "@/game/court/geometry";
 import { evaluateHitAttempt, hasBallPassedPlayer, isDoubleBounce, isOutOfBounds } from "@/game/collision/reach";
 import { computeLaunchVelocity, stepBallPhysics } from "@/game/physics/trajectory";
-import { computeCpuTargetY, moveToward } from "@/game/cpu/ai";
-import { applyHitError, DIFFICULTY_PARAMS } from "@/game/difficulty/params";
-import { applyPlayerMovement } from "@/game/player/movement";
+import { computeCpuTargetY } from "@/game/cpu/ai";
+import { applyHitError, DIFFICULTY_PARAMS, TUTORIAL_PARAMS, type DifficultyParams } from "@/game/difficulty/params";
+import { cpuDesiredVelocity, stepLateralMotion } from "@/game/player/movement";
 import { awardPoint, createInitialScore, isMatchOver } from "@/game/scoring/scoring";
 import { classifyServeTiming, computeServeY, getServeSide, type ServeQuality } from "@/game/serve/serve";
 import type {
@@ -38,8 +46,14 @@ import type {
 } from "@/game/types";
 
 const AIM_OFFSET = 120;
-const RALLY_SPEED_STEP = 0.03;
-const RALLY_SPEED_MAX = 1.6;
+// Softened from 0.03/1.6 (Physics & Game Feel pass): the old ramp reached
+// its +60% cap after just ~20 hits (10 exchanges), compounding against the
+// REACH_X_* windows in constants.ts and undoing their forgiveness a few
+// exchanges into every rally. Difficulty should come from more than raw
+// speed (see docs/GAME_DESIGN.md) — this keeps a real, felt escalation
+// without racing ahead of what the widened hit windows were tuned for.
+const RALLY_SPEED_STEP = 0.022;
+const RALLY_SPEED_MAX = 1.45;
 const HIT_QUALITY_SPEED_MULTIPLIER: Record<Exclude<HitQuality, "miss">, number> = {
   perfect: 1.15,
   good: 1.0,
@@ -62,12 +76,23 @@ function freshBall(owner: Side): BallState {
 }
 
 function freshPlayer(side: Side): PlayerState {
-  return { side, x: side === "leo" ? LEO_X : ALICE_X, y: COURT_WIDTH / 2, isSwinging: false, lastShot: null };
+  return { side, x: side === "leo" ? LEO_X : ALICE_X, y: COURT_WIDTH / 2, vy: 0, lastShot: null };
 }
 
 export interface GameEngineOptions {
   difficulty: Difficulty;
   random?: () => number; // injectable for deterministic tests — defaults to Math.random
+  /** Who serves the very first point. Defaults to "leo" — every existing call site keeps its exact prior behavior. Used by the tutorial (components/tutorial.ts) so Leo receives a real, easy serve before he's ever asked to press the hit key himself. */
+  initialServer?: Side;
+  /**
+   * Opt-in "training wheels" for the CPU only — see game/difficulty/params.ts
+   * TUTORIAL_PARAMS. Defaults to false, which preserves every existing
+   * behavior/test exactly: Alice's movement/hit-error uses TUTORIAL_PARAMS
+   * instead of DIFFICULTY_PARAMS[difficulty], and she aims every return
+   * straight at Leo's current position instead of a random spot on the
+   * court — nothing about Leo's own physics, input, or scoring changes.
+   */
+  tutorialMode?: boolean;
 }
 
 export class GameEngine {
@@ -79,15 +104,23 @@ export class GameEngine {
   private phase: MatchPhase = "ready_to_serve";
   private lastEvent: GameEvent | null = null;
   private serveTimerMs = 0;
+  /** Remaining ms of a buffered rally hit-key press — see PLAYER_HIT_BUFFER_MS. 0 means no press is currently armed. */
+  private hitBufferMs = 0;
+  /** The positioning-error roll Alice uses for the shot currently coming at her — sampled once per Leo hit (see launchShot), never per frame. */
+  private aliceErrorRoll = 0.5;
+  /** Ms Alice has waited in "ready_to_serve" before her auto-toss — see ALICE_SERVE_DELAY_MS. */
+  private aliceServeDelayMs = 0;
   private readonly difficulty: Difficulty;
   private readonly random: () => number;
+  private readonly tutorialMode: boolean;
 
   constructor(options: GameEngineOptions) {
     this.difficulty = options.difficulty;
     this.random = options.random ?? Math.random;
+    this.tutorialMode = options.tutorialMode ?? false;
     this.leo = freshPlayer("leo");
     this.alice = freshPlayer("alice");
-    this.score = createInitialScore("leo");
+    this.score = createInitialScore(options.initialServer ?? "leo");
     this.ball = freshBall("alice"); // placeholder — resetForNextServe() below replaces it immediately
     this.resetForNextServe();
   }
@@ -126,15 +159,14 @@ export class GameEngine {
       return;
     }
 
-    // phase === "rally" — exactly the pre-Etapa-5 loop, unchanged.
-    this.leo = { ...this.leo, y: applyPlayerMovement(this.leo.y, input.direction, dt, COURT_WIDTH) };
+    // phase === "rally" — pre-Etapa-5 loop, plus the buffered hit-key read
+    // (Physics & Game Feel pass — see PLAYER_HIT_BUFFER_MS).
+    this.moveLeo(dt, input.direction);
     this.updateAlicePosition(dt);
 
     this.ball = stepBallPhysics(this.ball, dt);
 
-    if (this.ball.owner === "leo" && input.hitPressed) {
-      this.attemptPlayerHit(input.direction);
-    }
+    this.updateLeoHitBuffer(dt, input);
     if (this.ball.owner === "alice") {
       this.maybeAttemptCpuHit();
     }
@@ -151,16 +183,24 @@ export class GameEngine {
    * choice, not a limitation worth engineering around.
    */
   private updateReadyToServe(dt: number, input: InputState): void {
-    this.leo = { ...this.leo, y: applyPlayerMovement(this.leo.y, input.direction, dt, COURT_WIDTH) };
+    this.moveLeo(dt, input.direction);
 
     if (this.score.server === "leo") {
       if (input.hitPressed) this.startToss();
     } else {
-      // Alice never depends on keyboard input — she starts her own toss the
-      // instant it's her turn, deterministically (see AUTO_TOSS in the
-      // approved spec).
-      this.startToss();
+      // Alice never depends on keyboard input — she starts her own toss by
+      // herself, deterministically (see AUTO_TOSS in the approved spec),
+      // after a fixed beat that lets the previous point's outcome land
+      // (see ALICE_SERVE_DELAY_MS).
+      this.aliceServeDelayMs += dt * 1000;
+      if (this.aliceServeDelayMs >= ALICE_SERVE_DELAY_MS) this.startToss();
     }
+  }
+
+  /** Leo's lateral movement for this frame — same velocity model Alice uses, tuned for a human on a keyboard (see PLAYER_ACCEL). */
+  private moveLeo(dt: number, direction: -1 | 0 | 1): void {
+    const motion = stepLateralMotion({ y: this.leo.y, vy: this.leo.vy }, direction * PLAYER_MOVE_SPEED, PLAYER_ACCEL, dt, 0, COURT_WIDTH);
+    this.leo = { ...this.leo, y: motion.y, vy: motion.vy };
   }
 
   /**
@@ -174,6 +214,9 @@ export class GameEngine {
   private startToss(): void {
     const server = this.score.server;
     const receiver: Side = server === "leo" ? "alice" : "leo";
+    // The server plants: any lateral momentum from the ready phase is
+    // dropped so the toss origin (his position) is truly stationary.
+    if (server === "leo") this.leo = { ...this.leo, vy: 0 };
     const serverPlayer = server === "leo" ? this.leo : this.alice;
 
     this.ball = {
@@ -206,7 +249,7 @@ export class GameEngine {
     if (server === "alice") {
       // Leo is receiving — free to reposition while Alice tosses, same as
       // any other moment he isn't the one whose position must stay locked.
-      this.leo = { ...this.leo, y: applyPlayerMovement(this.leo.y, input.direction, dt, COURT_WIDTH) };
+      this.moveLeo(dt, input.direction);
     }
     // When Leo is the server his own Y is deliberately never touched here:
     // the ball's origin is his position for the whole toss (see startToss),
@@ -269,13 +312,15 @@ export class GameEngine {
    */
   private resetForNextServe(): void {
     this.serveTimerMs = 0;
+    this.aliceServeDelayMs = 0;
+    this.hitBufferMs = 0; // a leftover armed press from the point that just ended must not silently swing at the next point's first ball
     this.leo = { ...this.leo, lastShot: null };
     this.alice = { ...this.alice, lastShot: null };
 
     const totalPointsInGame = this.score.points[0] + this.score.points[1];
     const targetY = computeServeY(getServeSide(totalPointsInGame));
-    this.leo = { ...this.leo, y: targetY };
-    this.alice = { ...this.alice, y: targetY };
+    this.leo = { ...this.leo, y: targetY, vy: 0 };
+    this.alice = { ...this.alice, y: targetY, vy: 0 };
 
     const server = this.score.server;
     const serverPlayer = server === "leo" ? this.leo : this.alice;
@@ -295,27 +340,79 @@ export class GameEngine {
     this.phase = "ready_to_serve";
   }
 
-  private updateAlicePosition(dt: number): void {
-    const params = DIFFICULTY_PARAMS[this.difficulty];
-    // Two-layer bounds protection (see docs/PROGRESS.md — this is the fix
-    // for the historical "Alice left the court" bug): camada 1 is inside
-    // computeCpuTargetY itself (the target it hands back is already
-    // clamped to alicePlayableBounds), camada 2 is clamping the position
-    // moveToward() actually produces, so a future change to either
-    // function can't reintroduce an out-of-bounds Alice on its own.
-    const targetY = computeCpuTargetY(this.ball, this.alice, params, this.random(), COURT.alicePlayableBounds);
-    const movedY = moveToward(this.alice.y, targetY, params.maxMoveSpeed, dt);
-    const safeY = clampToBounds(this.alice.x, movedY, COURT.alicePlayableBounds).y;
-    this.alice = { ...this.alice, y: safeY };
+  /**
+   * AI decides *where* (computeCpuTargetY), the movement model decides *how*
+   * (cpuDesiredVelocity + stepLateralMotion — bounded acceleration, braking
+   * on approach, a dead zone on arrival). The error roll is the one sampled
+   * for this incoming shot, not a fresh one per frame — see aliceErrorRoll.
+   *
+   * Two-layer bounds protection (see docs/PROGRESS.md — this is the fix for
+   * the historical "Alice left the court" bug): camada 1 is inside
+   * computeCpuTargetY itself (the target it hands back is already clamped
+   * to alicePlayableBounds), camada 2 is clamping the position the motion
+   * step actually produces, so a future change to either function can't
+   * reintroduce an out-of-bounds Alice on its own.
+   */
+  /** Alice's tuning for this match — TUTORIAL_PARAMS when tutorialMode is on, otherwise the selected Difficulty's own params. See GameEngineOptions.tutorialMode. */
+  private cpuParams(): DifficultyParams {
+    return this.tutorialMode ? TUTORIAL_PARAMS : DIFFICULTY_PARAMS[this.difficulty];
   }
 
-  private attemptPlayerHit(direction: -1 | 0 | 1): void {
-    const quality = evaluateHitAttempt(this.ball, this.leo);
-    this.leo = { ...this.leo, lastShot: quality };
-    if (quality === "miss") return; // a swing that connects with nothing — the auto-miss-on-pass-by handles scoring
+  private updateAlicePosition(dt: number): void {
+    const params = this.cpuParams();
+    const bounds = COURT.alicePlayableBounds;
+    const targetY = computeCpuTargetY(this.ball, this.alice, params, this.aliceErrorRoll, bounds);
+    const chasing = this.ball.owner === "alice";
+    const maxSpeed = chasing ? params.maxMoveSpeed : params.maxMoveSpeed * CPU_RECOVERY_SPEED_RATIO;
+    const desiredVy = cpuDesiredVelocity(targetY - this.alice.y, maxSpeed, CPU_BRAKE_TIME, CPU_ARRIVE_EPSILON);
+    const motion = stepLateralMotion({ y: this.alice.y, vy: this.alice.vy }, desiredVy, CPU_ACCEL, dt, bounds.minY, bounds.maxY);
+    const safeY = clampToBounds(this.alice.x, motion.y, bounds).y;
+    this.alice = { ...this.alice, y: safeY, vy: motion.vy };
+  }
 
+  /**
+   * Arms/re-checks Leo's buffered hit-key press. A fresh press (re-)arms the
+   * buffer to its full duration regardless of whether one was already
+   * counting down — a second tap always means "try again now", not "extend
+   * the old attempt". While armed and it's Leo's ball, retries every frame
+   * (the same no-cost retry the CPU already gets in maybeAttemptCpuHit) so
+   * an early press keeps a live chance as the ball closes in, instead of
+   * being discarded on the single frame it happened to be read. A resolved
+   * "miss" is only ever recorded once — at the moment the buffer actually
+   * runs out without connecting — never on every intermediate too-far
+   * evaluation, so the miss animation/feedback doesn't fire prematurely
+   * while the ball is still approaching.
+   */
+  private updateLeoHitBuffer(dt: number, input: InputState): void {
+    if (input.hitPressed) this.hitBufferMs = PLAYER_HIT_BUFFER_MS;
+    if (this.hitBufferMs <= 0) return;
+
+    if (this.ball.owner === "leo" && this.attemptPlayerHit(input.direction)) {
+      this.hitBufferMs = 0;
+      return;
+    }
+
+    this.hitBufferMs -= dt * 1000;
+    if (this.hitBufferMs <= 0) {
+      this.hitBufferMs = 0;
+      // Deliberately doesn't also set `lastEvent` here (unlike a real
+      // connect in launchShot): lastEvent's "hit" type is read elsewhere as
+      // "a shot was actually exchanged" (e.g. rally-alternation checks) — a
+      // spent buffer is a non-event for that purpose. LeoAnimator's MISS
+      // state is driven off `leo.lastShot` directly, which this does set.
+      if (this.ball.owner === "leo") this.leo = { ...this.leo, lastShot: "miss" };
+    }
+  }
+
+  /** Evaluates one hit attempt at the current instant. Returns true (and launches the shot) only on a real connect — never mutates state on a miss, since a buffered retry may still land on a later frame. */
+  private attemptPlayerHit(direction: -1 | 0 | 1): boolean {
+    const quality = evaluateHitAttempt(this.ball, this.leo);
+    if (quality === "miss") return false;
+
+    this.leo = { ...this.leo, lastShot: quality };
     const aimY = this.computeAimY(this.leo.y, direction);
     this.launchShot("leo", quality, aimY);
+    return true;
   }
 
   private maybeAttemptCpuHit(): void {
@@ -323,12 +420,15 @@ export class GameEngine {
     if (dx > REACH_X_PERFECT) return; // waits for a near-perfect window — see docs/GAME_DESIGN.md "CPU (Alice)"
 
     const rawQuality = evaluateHitAttempt(this.ball, this.alice);
-    const params = DIFFICULTY_PARAMS[this.difficulty];
+    const params = this.cpuParams();
     const quality = applyHitError(rawQuality, params, this.random());
     this.alice = { ...this.alice, lastShot: quality };
     if (quality === "miss") return;
 
-    const aimY = this.random() * COURT_WIDTH;
+    // Tutorial: always straight back at wherever Leo currently is — the
+    // whole point is a return he can reasonably reach every time. Normal
+    // play keeps the existing uniformly-random aim (real tennis variety).
+    const aimY = this.tutorialMode ? this.leo.y : this.random() * COURT_WIDTH;
     this.launchShot("alice", quality, aimY, params.ballSpeedMultiplier);
   }
 
@@ -360,6 +460,10 @@ export class GameEngine {
 
     this.rallyCount += 1;
     this.lastEvent = { type: "hit", side: hitter, quality };
+    // One positioning-error roll per shot coming at Alice — held for the
+    // whole flight so her target (and therefore her run) is a single
+    // committed read, not a per-frame jitter (see computeCpuTargetY).
+    if (hitter === "leo") this.aliceErrorRoll = this.random();
   }
 
   private checkPointEndingConditions(): void {
@@ -381,10 +485,15 @@ export class GameEngine {
 
   private awardPointTo(winner: Side): void {
     const gamesBefore = [...this.score.games] as [number, number];
+    const setsBefore = [...this.score.sets] as [number, number];
     this.score = awardPoint(this.score, winner);
     this.rallyCount = 0;
 
-    const gameChanged = this.score.games[0] !== gamesBefore[0] || this.score.games[1] !== gamesBefore[1];
+    const setChanged = this.score.sets[0] !== setsBefore[0] || this.score.sets[1] !== setsBefore[1];
+    // awardPoint zeroes the game count when a set is won, so a set win is
+    // always also a game win (and a server change) even though games[] may
+    // read 0-0 again afterwards.
+    const gameChanged = setChanged || this.score.games[0] !== gamesBefore[0] || this.score.games[1] !== gamesBefore[1];
     const matchWinner = isMatchOver(this.score);
 
     if (matchWinner) {
@@ -395,7 +504,7 @@ export class GameEngine {
 
     if (gameChanged) {
       this.score = { ...this.score, server: this.score.server === "leo" ? "alice" : "leo" };
-      this.lastEvent = { type: "game", winner };
+      this.lastEvent = setChanged ? { type: "set", winner } : { type: "game", winner };
     } else {
       this.lastEvent = { type: "point", winner };
     }

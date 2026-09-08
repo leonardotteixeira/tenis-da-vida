@@ -1,6 +1,182 @@
 # Progress — Tênis da Vida
 
-Última atualização: sessão de 2026-09-06 (décima primeira parte — Auditoria Final de Release + fechamento do release candidate). Ler `docs/GAME_DESIGN.md` primeiro para entender o jogo — este arquivo é só o estado de implementação.
+Última atualização: sessão de 2026-09-07 (décima quinta parte — tutorial interativo "Como Jogar" via EXTRAS). Ler `docs/GAME_DESIGN.md` primeiro para entender o jogo — este arquivo é só o estado de implementação.
+
+## Sessão de 2026-09-07 (parte 15) — Tutorial interativo "Como Jogar"
+
+**Escopo**: pedido explícito e único desta sessão — um tutorial interativo, acessível só pelo menu EXTRAS (nunca automático antes de uma partida normal), ensinando MOVER → POSICIONAR → REBATER → TIMING → DIREÇÃO → RALLY → RECUPERAÇÃO através do jogo real, não telas estáticas. Reaproveitar sistemas existentes (motor, física, IA, animações, HUD) — nada de física/hit-detection/scoring paralelos.
+
+### O que já existia (auditoria antes de qualquer código)
+
+`EXTRAS` já estava desenhado na arte do menu (`menu.png`) mas era 100% decorativo — sem nenhum handler, sem tela por trás (só `JOGAR`/`CONFIGURAÇÕES` tinham botões invisíveis alinhados). `GameEngine` não tinha nenhum conceito de "modo tutorial" nem de escolher quem saca primeiro (sempre Leo).
+
+### Arquitetura da correção
+
+- **`game/engine/GameEngine.ts`**: dois novos campos opcionais em `GameEngineOptions`, ambos com default que preserva 100% do comportamento anterior — `initialServer?: Side` (default `"leo"`, como sempre foi) e `tutorialMode?: boolean` (default `false`). Com `tutorialMode: true`, `cpuParams()` troca `DIFFICULTY_PARAMS[difficulty]` por `TUTORIAL_PARAMS` (novo, em `game/difficulty/params.ts` — erro de posição quase zero, taxa de erro de golpe zero) e a Alice mira cada devolução exatamente na posição atual do Leo (`aimY = this.leo.y`) em vez do ponto aleatório de sempre. Nenhuma outra função do motor foi tocada.
+- **`components/tutorial.ts`** (novo): `TutorialController`, uma máquina de estados pequena e determinística (mesmo padrão de `MatchStatsTracker`/`ImpactEffects` — lê dois snapshots consecutivos, nunca muta o motor) que avança pelos 8 passos aprovados só a partir de sinais reais já publicados pelo motor (`frameEvents`, `rally.count`, posição/velocidade de bola e jogador) — nenhuma física, hit-detection ou timing fake.
+- **`components/TutorialOverlay.tsx`** (novo): banner de instrução fixado na faixa do estádio acima da quadra jogável (nunca sobre bola/jogadores/quadra), com "Pular tutorial" sempre visível, e o cartão final ("VOCÊ ESTÁ PRONTO!" + JOGAR/VOLTAR) reaproveitando o mesmo estilo visual de `PauseOverlay`/`SettingsPanel`.
+- **`components/ExtrasPanel.tsx`** (novo) + **`components/MainMenu.tsx`**: EXTRAS ganhou um botão invisível de verdade (mesmo padrão JOGAR/CONFIGURAÇÕES — coordenadas medidas da arte, passo vertical de 8.1% da altura), abrindo um painel com "Como jogar"/"Voltar".
+- **`components/GameCanvas.tsx`**: novas props opcionais `tutorial`/`onTutorialExit`; quando `tutorial`, constrói o motor com `{difficulty:"easy", tutorialMode:true, initialServer:"alice"}` (Alice saca primeiro de propósito — dá ao Leo uma bola fácil de receber antes de precisar saber o que é SPACE) e roda um `TutorialController` a mais no mesmo loop de frame, só re-renderizando o React quando a legenda realmente muda (não a cada frame).
+- **`app/page.tsx`**: nova tela `"tutorial"`; "Jogar" no cartão final vai direto para uma partida real (não volta pro menu); "Pular" volta ao menu a partir de qualquer passo.
+
+### Testes
+
+- **`tests/unit/tutorial.test.ts`** (novo, 19 testes): cada transição de passo testada isoladamente (inclusive casos de borda — soma de deslocamento em zigue-zague, hit quase-reto não conta como "direcional", timeout da recuperação, `game_over` no meio do tutorial não trava).
+- **`tests/unit/engine.test.ts`**: novo describe "tutorial support" (5 testes) — `initialServer` default preservado, Alice saca sem nenhum input quando `initialServer:"alice"`, golpes da Alice ficam sempre PERFECT em `tutorialMode` mesmo no pior roll de erro, e a mira da devolução dela bate exatamente com a razão vy/vx esperada mirando no Leo (prova independente de velocidade/qualidade do golpe).
+- **Antes**: 200 testes (herdados da parte 14). **Depois**: **226 testes**, nenhum removido ou enfraquecido.
+- Não foram adicionados testes de componente React (EXTRAS/tutorial UI) — o projeto nunca usou React Testing Library/jsdom, só testa as classes de lógica puras; introduzir essa dependência só para isso teria contrariado o próprio pedido de não adicionar dependências desnecessárias.
+
+### Validação técnica
+
+`npm test`: **226/226** ✅. `npx tsc --noEmit`: limpo ✅. `npx eslint .`: limpo ✅. `npm run build`: limpo ✅.
+
+### Validação no navegador
+
+MENU → EXTRAS → COMO JOGAR confirmado visualmente: painel Extras abre e fecha corretamente, o tutorial carrega com o banner "A / D — MOVER" no lugar certo (nunca sobre a ação), a Alice saca automaticamente e sozinha (confirma `initialServer`/`tutorialMode` funcionando de ponta a ponta), "Pular tutorial" volta ao menu, e o fluxo normal MENU → JOGAR continua idêntico a antes (sem banner, sem atraso). Console sem erros nos dois fluxos.
+
+**Achado de ambiente, não de código**: durante a verificação, um processo `next dev` antigo (de uma sessão anterior do Claude Code CLI, ainda ativo na mesma pasta) estava servindo um bundle desatualizado — o próprio Next.js detectou e recusou subir um segundo servidor na mesma pasta. Encerrado (autorizado pelo usuário) e substituído por um servidor novo, que carregou tudo corretamente. Não relacionado a nenhuma mudança desta sessão.
+
+**Não foi possível** — pela mesma limitação de automação já documentada nas partes anteriores (o `requestAnimationFrame` só avança sob repaint forçado neste ambiente, e teclas via automação são toques únicos, não seguradas) — percorrer os 8 passos completos de verdade via navegador automatizado; a prova precisa e determinística de cada transição está nos 19 testes de `TutorialController`.
+
+### Limitações e decisões pendentes
+
+- Conclusão do tutorial não é persistida em `localStorage` — o próprio pedido permitia isso como opcional e pediu para não adicionar infraestrutura de persistência só para isso; como o tutorial fica sempre acessível via EXTRAS independente de já ter sido concluído, não havia necessidade real.
+- Threshold de "recuperação" (100 unidades do centro da quadra, timeout de 4s) e os demais números do `TutorialController` foram calculados a partir da física real, não de playtesting humano repetido — primeiros candidatos a ajustar se o usuário achar o ritmo do tutorial rápido/lento demais jogando de verdade.
+
+### Git
+
+Nenhum commit ou push foi feito em nenhum momento desta sessão.
+
+## Sessão de 2026-09-07 (parte 14) — Full Polish & Game Feel
+
+**Escopo**: polish pass no jogo existente (sem features de V2). Prioridade absoluta: fluidez de movimento da Alice. Nenhuma regra, pontuação, janela de alcance, buffer, gravidade ou velocidade de bola foi alterada.
+
+### Diagnóstico (antes de editar)
+
+1. **Alice vibrava no alvo**: `updateAlicePosition` sorteava `this.random()` **todo frame** para o erro de posicionamento (±40 no normal, ±70 no easy). Medido em gravação frame a frame: depois de chegar, ela oscilava ±4 a ±8 px por frame durante ~1,7 s. Causa raiz nº 1 de "sprite sendo arrastado".
+2. **Velocidade constante, sem aceleração/frenagem**: `moveToward` ia de 0 a 240 u/s em um frame e parava seco; Leo idem (`applyPlayerMovement`).
+3. **Sem frames de locomoção**: a Alice (e o Leo) usava IDLE enquanto se movia — deslize de pés garantido. A sheet tem CAMINHADA (5) e CORRIDA (4) para os dois; o FRAME_MAP anterior dizia que não eram separáveis (bboxes se intercalam), mas os **pixels** não se tocam — separação por componente conectado (`scipy.ndimage.label`) resolve.
+4. **Ponto sem respiro**: Alice começava o toss no primeiro frame após o ponto; placar/reação nunca eram legíveis.
+5. Sem áudio, sem pausa, sem configurações, sem resumo pós-partida; `CanvasPattern` recriado por frame; `isSwinging`, `"out"/"point_over"` mortos; evento `"set"` nunca emitido; `AliceAnimator` sem testes.
+
+### Motor (`game/`)
+
+- `game/player/movement.ts`: `stepLateralMotion` (velocidade com aceleração limitada, clamp na lateral zera a velocidade) e `cpuDesiredVelocity` (velocidade cheia longe, frenagem proporcional nos últimos `CPU_BRAKE_TIME` s, zona morta `CPU_ARRIVE_EPSILON`). `applyPlayerMovement` e `moveToward` removidos (substituídos, não duplicados).
+- `game/constants.ts`: `PLAYER_ACCEL=2800` (Leo 0→260 em ~90 ms), `CPU_ACCEL=1500`, `CPU_BRAKE_TIME=0.14`, `CPU_ARRIVE_EPSILON=2`, `CPU_RECOVERY_SPEED_RATIO=0.45`, `ALICE_SERVE_DELAY_MS=900`.
+- `game/types`: `PlayerState.isSwinging` → `vy` (velocidade lateral real, lida pela animação); `BallStateType` sem `"out"/"point_over"`.
+- `game/cpu/ai.ts`: mesma assinatura; o *roll* de erro passa a ser sorteado **uma vez por golpe do Leo** (`GameEngine.aliceErrorRoll`, em `launchShot`) e mantido durante o voo. Com a bola do Leo, o alvo é o centro da quadra (recuperação para posição de prontidão) a 45 % da velocidade — nada de reach extra.
+- `GameEngine`: `moveLeo`/`updateAlicePosition` com o modelo novo; servidor "planta" (vy=0) ao iniciar o toss; `ALICE_SERVE_DELAY_MS` antes do auto-toss; `awardPointTo` emite `{type:"set"}` quando um set fecha (antes vinha como `"game"`).
+- Testes: `movement.test.ts` (novo), `cpu-ai.test.ts` (recuperação ao centro, roll estável; testes de `moveToward` removidos junto com a função), `engine.test.ts` (3 testes adaptados ao beat do saque e ao deslize de frenagem no frame do saque; novos: sem inversão de direção com fonte aleatória maximamente ruidosa, aceleração gradual, recuperação ao centro, evento de set, **rally ≥ 20 golpes com um bot de Leo competente**).
+
+### Apresentação (`components/`)
+
+- `frameEvents.ts` (novo): único detector de "aconteceu neste frame" (hit, bounce, miss por transição de `lastShot`, point/game/set/match). Animators, efeitos, áudio, banners e estatísticas leem daqui.
+- `playerAnimation.ts` (novo): `PlayerAnimator` compartilhado; `leoAnimation.ts`/`aliceAnimation.ts` viram configurações (2 vs 3 frames de preparação, 3 vs 2 de miss, velocidade máxima). Estados novos: `walk`, `run`, `celebrate`. **O ciclo de caminhada/corrida avança por distância percorrida** (`vy·dt`; 14 u/frame andando, 22 u/frame correndo) — pés presos ao chão por construção; walk↔run preservam a fase da passada; `prepare` tem prioridade quando a bola se aproxima.
+- Frames novos extraídos (por componente alpha, com dilatação de 2 px): `alice/derived/{walk-1..5,run-1..4,celebrate-1..2}.png`, `leo/derived/{walk-1..5,run-1..4,celebrate-1..2}.png` (COMEMORAÇÃO 3–4 estão fundidos e ficaram de fora). Banners chroma-keyed da sheet de efeitos → `efeitos/derived/banner-{perfect,good,late,miss,point,game,set,match}.png`. FRAME_MAPs atualizados.
+- `impactEffects.ts`: passa a usar `frameEvents`; ganha banners (timing 700 ms sobre a cabeça de quem bateu, ponto 1100 ms no centro), rastro de 2 afterimages só acima de 520 u/s, e mantém faíscas/poeira/shake/flash/squash da parte 13.
+- `GameCanvas.tsx`: sprites novos; `PatternCache` (padrão criado uma vez); bola achata no quique (28 %); banners com pop-in/fade; **pausa** (ESC/P — congela motor, animators, efeitos e descarta input; overlay React); áudio ligado aos eventos; `MatchStatsTracker`; a tela de resultado só entra depois de `MATCH_OUTRO_MS=1600` (banner MATCH! + comemoração visíveis).
+- `audio.ts` (novo): Web Audio sintetizado, sem arquivos e sem dependências — raquete por qualidade (PERFECT com "ping" duplo), quique, erro, ponto (sobe para Leo, desce para Alice), game/set, partida, clique. Desbloqueio no primeiro keydown/pointerdown.
+- `settings.ts` + `SettingsPanel.tsx` (novos): volume e dificuldade persistidos em `localStorage`, abertos pelo botão CONFIGURAÇÕES já desenhado na arte do menu (overlay invisível medido do PNG: top 49,6 %). Recordes (rally mais longo, melhor aproveitamento, vitórias).
+- `matchStats.ts` (novo) + `GameOverScreen.tsx`: resumo abaixo da arte (rally mais longo, aproveitamento, golpes por qualidade, erros) com marcação de recorde.
+- `PauseOverlay.tsx` (novo). `HUD.tsx`: "SAQUE · LEO/ALICE" e pop de 320 ms no placar quando muda. `app/page.tsx`: fluxo menu → configurações → partida → resultado, reinício e menu a partir da pausa.
+- Testes novos: `aliceAnimation.test.ts` (locomoção por distância, walk↔run, prioridade de prepare, contact/recover/miss/celebrate, dt negativo), `frameEvents.test.ts` (eventos, stats, settings), `leoAnimation.test.ts` reescrito para a assinatura nova.
+
+### Números
+
+`npm test`: **202/202** (antes: 167). `tsc --noEmit`, `eslint .` e `npm run build` limpos.
+
+### Playtest (Playwright headless, gravação frame a frame do canvas)
+
+- Alice numa devolução larga: acelera em ~6 frames, corre com os frames de CORRIDA, freia (+3, +2, +2, +1, 0) e **para sem oscilar**; enquanto a bola é do Leo, volta devagar ao centro. Antes: ±4–8 px/frame de vibração por ~1,7 s.
+- Banners PERFECT!/MISS!/LATE! sobre o jogador, POINT! no centro, comemoração da Alice (2 frames) durante o beat de 900 ms antes do saque dela — tudo confirmado nos frames.
+- Pausa e configurações confirmadas por screenshot; tela de resultado com o resumo (rally mais longo, aproveitamento, golpes por qualidade, erros, recordes) alcançada numa partida completa headless. Zero erros de console em todas as gravações.
+- Performance (Chromium headless, 4 pontos com rallies, sem captura): 927 frames em 15,5 s, dt mediano 16,7 ms, p99 16,8 ms, 2 frames > 20 ms (o pior, 66,7 ms, no primeiro desbloqueio do AudioContext). Numa partida completa de ~10 min (27.703 frames, bot de teclado): mediana 16,7 ms, p99 16,8 ms, 9 frames > 20 ms, zero erros de console; resumo final lido do DOM: rally mais longo 16, aproveitamento 43 %, 202 golpes do Leo (10 perfect · 17 good · 59 late), 116 erros.
+
+### Achados pré-existentes mantidos
+
+- A bola desenhada na própria arte dos frames PREPARE do Leo (ver parte 13) continua — é arte, não código.
+- HMR do `next dev` de longa duração manteve um `AliceAnimator` antigo em memória numa das gravações (sintoma: Alice em IDLE enquanto corria) — resolvido reiniciando o dev server; não é bug do jogo.
+
+### Git
+
+Nenhum commit ou push nesta sessão.
+
+## Sessão de 2026-09-07 (parte 13) — Visual & Game Feel: feedback de impacto
+
+**Escopo**: só apresentação. Nenhuma constante de física, alcance, buffer, IA, dificuldade, pontuação ou regra foi tocada — nenhum arquivo de `game/` foi editado nesta sessão (as alterações em `game/` que aparecem no working tree são as da parte 12, ainda não commitadas).
+
+### Arquitetura encontrada (reconhecimento antes de editar)
+
+`GameCanvas.tsx` é o único loop (`requestAnimationFrame`) e já desenha em ordem quadra → Leo → Alice → bola (com sombra) → flash. O motor emite `lastEvent = {type:"hit", side, quality}` uma única vez por contato em `launchShot()` (rally e saque, Leo e Alice) e zera `lastEvent` a cada `update()`. `stepBallPhysics` coloca `ball.state = "bouncing"` exatamente no frame do toque no chão e volta para `"in_play"` no frame seguinte — ou seja, a borda `prev !== "bouncing" && next === "bouncing"` é um sinal de bounce único por construção. `LeoAnimator`/`AliceAnimator` já seguem o padrão "lê dois snapshots consecutivos, nunca muta o motor". O HUD, placar e menus são elementos React **fora** do canvas — um shake por `ctx.translate` não os afeta por construção.
+
+### O que foi feito
+
+- **`components/impactEffects.ts`** (novo) — `ImpactEffects`, mesma família dos animators: `update(dt, prev, next)` lê os sinais acima, nunca cria uma segunda detecção de hit/bounce. Pool fixo de 40 partículas pré-alocadas (sem alocação por frame, sem state React). Faíscas por qualidade PERFECT 8 / GOOD 5 / LATE 3, spawn na posição da bola do *frame anterior* (o `launchShot` zera `z` e encaixa `x` na baseline no frame do contato — a posição anterior é onde o contato visualmente aconteceu; piso de z=12 para não nascerem debaixo da sombra). Poeira: 4 partículas rasas na superfície, no bounce. Shake: **só PERFECT do Leo**, 100ms, amplitude 4px decaindo linearmente, offsets inteiros. Anel de flash PERFECT: agora emitido aqui para **ambos** os lados (antes era só do Leo, via `LeoAnimationFrame.showImpactFlash` — campo e constante removidos de `leoAnimation.ts` para não haver dois caminhos para o mesmo efeito). Compressão da sombra: timer de 90ms disparado no bounce.
+- **`components/GameCanvas.tsx`** — `render()` recebe `effects`; `ctx.save()` → (só enquanto há shake: limpa o canvas com a cor da borda e `translate`) → quadra → Leo → Alice → sombra → poeira → faíscas → bola → flash → `ctx.restore()`. Sombra extraída para `drawBallShadow`: escala `max(0.35, 1 - z/300)`, alfa agora varia com a altura (0.16–0.38) e a compressão do bounce alarga/achata a elipse por ~90ms. Sombra e poeira ficam **por cima** dos sprites deliberadamente: todo golpe é lançado para cair exatamente na baseline do receptor, então o bounce acontece atrás do sprite de 150px — embaixo dele, os dois sinais sumiriam justamente quando importam (a sombra já era desenhada depois dos jogadores antes desta sessão, dentro de `drawBall`).
+- **Decisão**: shake não dispara no PERFECT da Alice. `maybeAttemptCpuHit` só tenta dentro da janela PERFECT, então a maioria dos golpes dela é PERFECT bruto — o shake viraria ruído constante. Ela recebe faíscas + anel de flash correspondentes à qualidade.
+
+### Ajustes após playtest (gravação frame a frame via Playwright headless)
+
+Primeira versão estava sutil demais: faíscas de 2–3px quase invisíveis a 1000px de canvas; LATE em tons bege sumia no saibro; shake ±1px imperceptível. Ajustado para faíscas de 3–4px com vida 200–320ms, LATE em branco/cinza neutro, poeira em tons de saibro mais claros, shake com magnitude cheia (decaindo 4→1px) e só a direção aleatória por frame. Medido nos frames: 4 frames de shake com offsets (-4,2), (-3,-2), (2,-1), (1,1) e zero depois.
+
+### Testes
+
+`tests/unit/impactEffects.test.ts` (novo, 15 testes): contagem exata por qualidade para ambos os lados e dentro das faixas do spec; nada dispara sem evento; spawn na posição anterior com piso de altura; expiração e liberação do pool; teto do pool sob rajada; poeira só na borda do bounce (não repete enquanto o estado segue "bouncing", repete num segundo bounce real); poeira rente ao chão; compressão da sombra decai a zero; shake só no PERFECT do Leo, inteiro, poucos px, zera em ~100ms; flash para os dois lados só no PERFECT; dt negativo no primeiro frame não corrompe nada. **Antes: 152. Depois: 167/167** ✅. `tsc --noEmit` e `eslint .` limpos ✅.
+
+### Performance
+
+Headless Chromium, 4 pontos com rallies, sem captura de frames: 926 frames, dt mediano 16.7ms, p99 16.8ms, zero frames > 20ms. O loop não aloca por frame além do que já alocava (snapshot do motor); o efeito custa no máximo 40 `fillRect` + 1 elipse + 1 arco.
+
+### Achado pré-existente (não corrigido — fora do escopo)
+
+Os frames PREPARE do Leo (`leo/derived/prepare-*.png`) têm uma bola desenhada na própria arte, no canto inferior esquerdo do sprite. Em jogo, aparece como uma "segunda bola" parada em (≈x 9, y da baseline) sempre que a bola real se aproxima do Leo. Durante a investigação ela chegou a parecer um bug de física (bola parada por vários frames) até ser isolada por análise de pixels (blob idêntico de 77px em todos os casos). Os sprites de contato/prepare da Alice têm o mesmo tipo de bola embutida na raquete. Isso é arte, não código.
+
+### Git
+
+Nenhum commit ou push nesta sessão.
+
+## Sessão de 2026-09-07 (parte 12) — Physics & Game Feel: causa raiz do timing do jogador
+
+**Contexto**: a Etapa corretiva (parte 10, ver abaixo) já tinha identificado e documentado — mas deliberadamente não corrigido, por falta de evidência — um "fator adicional": a janela de alcance (`REACH_X_LATE=50`, `REACH_Y=60`) nunca tinha sido validada contra timing humano real, só contra `HOLD_HIT` (tecla mantida todo frame) em testes automatizados, que satisfaz trivialmente qualquer tamanho de janela. O usuário pediu agora, explicitamente, uma investigação de causa raiz do porquê o jogador humano tem dificuldade para sustentar um rally enquanto a IA (Alice) rebate consistentemente bem.
+
+### Causa raiz (auditoria antes de qualquer alteração)
+
+Duas causas distintas, ambas reais, nenhuma sendo simplesmente "a bola está rápida":
+
+1. **Assimetria estrutural jogador vs. CPU**: `InputState.hitPressed` é um pulso de um único frame (verdadeiro só no frame exato do keydown físico — contrato já documentado no tipo, e correto desde a Etapa corretiva). O código pré-existente lia esse pulso uma única vez: `if (ball.owner === "leo" && input.hitPressed) attemptPlayerHit(...)`. Se esse único frame não coincidisse com a bola já dentro do alcance, a tentativa era descartada — sem novo pulso, sem nova chance, e o jogador precisava soltar e apertar a tecla física de novo para tentar outra vez. `maybeAttemptCpuHit()`, por outro lado, roda **todo frame automaticamente**, sem custo — ela nunca "gasta" uma tentativa errando o timing, e por construção (`if (dx > REACH_X_PERFECT) return;`) sua rebatida bruta é sempre virtualmente perfeita antes do erro de dificuldade ser aplicado.
+2. **Janelas geométricas estreitas demais para o tempo real**: a um `speed` típico de meio-rally (~420-650 world units/s), `REACH_X_GOOD=28` e `REACH_X_LATE=50` correspondiam a janelas reais de só ~90-135ms e ~155-240ms respectivamente — abaixo ou na borda do tempo de reação+decisão humano, e sem nenhuma margem para o caráter "uma chance só" do item 1.
+
+Os próprios testes de integração do motor (`HOLD_HIT` em `engine.test.ts`) nunca detectaram isso porque simulam `hitPressed: true` em todo frame — exatamente o comportamento que o KeyboardInput real não produz para uma pressão física única, confirmando a suspeita já registrada na parte 10.
+
+### Correção
+
+- **`game/constants.ts`**: `PLAYER_HIT_BUFFER_MS = 130` (novo) — mantém uma pressão "armada" por até 130ms, durante os quais `GameEngine` reavalia a tentativa todo frame (o mesmo retry sem custo que a CPU já tinha) até conectar ou o buffer esgotar. Nunca permite um contato fora das janelas de alcance — só dá a uma pressão cedo demais mais chances de cair dentro delas. `REACH_X_PERFECT` 12→16, `REACH_X_GOOD` 28→40, `REACH_X_LATE` 50→66, `REACH_Y` 60→68 — ajuste calculado (não arbitrário) para janelas reais de ~125-190ms (GOOD) e ~200-315ms (LATE) a velocidade típica.
+- **`game/engine/GameEngine.ts`**: nova `updateLeoHitBuffer()` substitui a leitura direta de `input.hitPressed`; `attemptPlayerHit()` agora retorna `boolean` e só muta estado num contato real (nunca num "ainda não chegou"), para o feedback de MISS não disparar prematuramente enquanto a bola ainda está a caminho. `RALLY_SPEED_STEP` 0.03→0.022 e `RALLY_SPEED_MAX` 1.6→1.45 — o ramp antigo atingia +60% em ~20 rebatidas, corroendo as janelas recém-ajustadas cedo demais em todo rally; suavizado, não removido.
+- **`components/leoAnimation.ts`**: `LeoAnimator` deixou de depender do `hitPressed` bruto por frame (que não coincide mais, necessariamente, com o frame de conexão real, uma vez bufferizado) e passou a usar o mesmo sinal inequívoco que `AliceAnimator` já usava — `lastEvent.type==="hit" && side==="leo"` para CONTACT, `leo.lastShot==="miss"` para MISS. Efeito colateral positivo (achado durante a correção, não o objetivo original): isso também corrige a animação do **saque** do Leo, que nunca disparava CONTACT/MISS antes — `ball.owner` durante o toss do Leo é o *receptor* ("alice"), nunca "leo", então a checagem antiga (`prevSnapshot.ball.owner === "leo"`) nunca era verdadeira para o próprio saque dele.
+
+### Testes
+
+- **`tests/unit/reach.test.ts`**: 3 valores hardcoded atualizados para os novos thresholds (nenhuma mudança de comportamento testado, só os números de entrada).
+- **`tests/unit/engine.test.ts`**: novo describe "GameEngine — buffered player hit" (3 testes) — prova, com um motor real dirigido frame a frame (não `HOLD_HIT`), que (a) uma pressão única ~100ms cedo demais agora conecta graças ao buffer, (b) uma pressão ~500ms cedo demais (fora do buffer) continua sendo descartada, exatamente como antes desta correção, e (c) uma pressão sem nenhuma bola por perto expira em silêncio, sem disparar MISS prematuro.
+- **`tests/unit/leoAnimation.test.ts`**: reescrito para o novo contrato do `LeoAnimator` (assinatura `update(dt, snapshot)`, sem o parâmetro `hitPressed`) — CONTACT e MISS agora testados via os mesmos sinais (`lastEvent`/`lastShot`) que o motor realmente produz, incluindo o caso de saque (`ballOwner: "alice"`) que antes não tinha cobertura nenhuma.
+- **Antes**: 148 testes (conta da parte 11). **Depois**: **152 testes** (4 novos — 3 no describe de buffer + reach.test.ts manteve a mesma contagem, só valores atualizados), nenhum removido ou enfraquecido.
+
+### Validação técnica
+
+`npm test`: **152/152** ✅. `npx tsc --noEmit`: limpo ✅. `npx eslint .`: limpo ✅.
+
+### Validação no navegador
+
+Jogo carregado e navegado manualmente via o painel de preview (menu → quadra → saque). Confirmado: sem erros no console, HUD/pontuação corretos, sprites/animações renderizando. Uma limitação de ambiente foi descoberta e documentada aqui para sessões futuras: **o `requestAnimationFrame` do jogo só avança quando o navegador é forçado a repintar** (ex.: um screenshot) — o painel de preview, mesmo com `document.hidden === false`, não gera frames de composição contínuos sem essa força externa, então esperar um tempo real (`wait`) entre duas pressões de tecla não avança o relógio interno do jogo na mesma proporção. Isso tornou inviável calibrar manualmente um saque PERFECT/GOOD via automação (mesma classe de limitação já registrada na parte 10 para a supressão de scroll via `window.dispatchEvent`) — mas foi possível confirmar, forçando repaints repetidos entre as duas pressões, que o pipeline inteiro (input → toss → classificação de timing → MISS → ponto pra Alice → reset → HUD) funciona corretamente de ponta a ponta. A prova precisa e determinística do próprio fix de timing/buffer está nos testes automatizados acima, não na automação do navegador — mesma conclusão metodológica já registrada na parte 10 para este tipo de problema.
+
+### Limitações e decisões pendentes
+
+- O tamanho exato de `PLAYER_HIT_BUFFER_MS` (130ms) e das janelas `REACH_X_*`/`REACH_Y` foi calculado a partir da velocidade da bola, não de playtesting humano real repetido — se o usuário ainda achar o jogo difícil (ou fácil demais) depois de jogar de verdade, esses são os primeiros números a reajustar, e já estão centralizados e documentados para isso.
+- Não implementado nesta sessão (fora do escopo do pedido de causa-raiz/timing): partículas de impacto/bounce, câmera dinâmica, modo debug visual, sons — o pedido do usuário cobria uma lista extensa de polish visual, mas a prioridade explícita ("PRIORIDADE ABSOLUTA — PLAYER RETURN") foi a única tratada nesta sessão, para não misturar uma correção de causa-raiz com mudanças estéticas não solicitadas como urgentes.
+
+### Git
+
+Nenhum commit ou push foi feito em nenhum momento desta sessão.
 
 ## Status geral
 

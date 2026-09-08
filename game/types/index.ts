@@ -20,7 +20,13 @@ export type Side = "leo" | "alice";
 
 export type HitQuality = "perfect" | "good" | "late" | "miss";
 
-export type BallStateType = "idle" | "in_play" | "bouncing" | "out" | "point_over";
+/**
+ * "idle" — held/reset, no physics beyond the serve toss; "in_play" — flying;
+ * "bouncing" — exactly the one frame the ball touches the court (see
+ * stepBallPhysics). The former "out"/"point_over" members were never
+ * assigned anywhere (release audit) and were removed.
+ */
+export type BallStateType = "idle" | "in_play" | "bouncing";
 
 export interface BallState {
   x: number;
@@ -43,7 +49,8 @@ export interface PlayerState {
   x: number;
   /** Lateral position, clamped to [0, COURT_WIDTH]. */
   y: number;
-  isSwinging: boolean;
+  /** Signed lateral velocity, world units / s — see game/player/movement.ts. Presentation reads it to pick walk/run frames. */
+  vy: number;
   lastShot: HitQuality | null;
 }
 

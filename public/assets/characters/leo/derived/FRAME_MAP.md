@@ -20,6 +20,9 @@ transparência) foram **descartados**, não fatiados por estimativa — ver
 | `miss-1.png` | ERRO/MISS, frame 1/3 | (19, 750, 100, 874) | 81×124 |
 | `miss-2.png` | ERRO/MISS, frame 2/3 | (130, 750, 210, 874) | 80×124 |
 | `miss-3.png` | ERRO/MISS, frame 3/3 | (224, 750, 327, 874) | 103×124 |
+| `walk-1.png` … `walk-5.png` | CAMINHADA, 5/5 (polish pass) | (704, 49, 1197, 212) | 89–97×163–164 |
+| `run-1.png` … `run-4.png` | CORRIDA, 4/4 (polish pass) | (1223, 50, 1774, 212) | 136–151×155–161 |
+| `celebrate-1.png`, `celebrate-2.png` | COMEMORAÇÃO, frames 1–2 de 4 | (357, 748, 540, 877) | 96×128, 85×124 |
 
 ## Ancoragem
 
@@ -34,8 +37,19 @@ ver `ANCHOR_BOTTOM_RATIO`/lógica de desenho em `components/GameCanvas.tsx`.
   entre poses consecutivas, sem gap de transparência real). Usar apenas o
   frame 1 (`forehand-contact.png`) como o momento de contato visual.
 - **BACKHAND** (todos os 4 frames): mesmo problema, todos fundidos.
-- **SMASH, SAQUE, VOLEIO, CAMINHADA (frames 5-6), CORRIDA (frames 2-4)**:
-  mesmo problema — poses dinâmicas se sobrepõem no sheet original.
+- **SMASH, SAQUE, VOLEIO**: mesmo problema — poses dinâmicas se sobrepõem no
+  sheet original.
+- **COMEMORAÇÃO frames 3-4**: fundidos entre si (braços erguidos se tocam);
+  só os frames 1-2 foram extraídos.
+
+**Atualização (polish pass)**: CAMINHADA (5 frames) e CORRIDA (4 frames)
+**foram** extraídos, ao contrário do que a auditoria original concluiu.
+A separação por componente conectado do canal alpha (`scipy.ndimage.label`,
+limiar 40/255, dilatação de 2px para as bordas) mostrou que as poses de
+CORRIDA só se *intercalam em bbox* (o retângulo do frame 2 começa antes do
+fim do retângulo do frame 1) — os pixels em si não se tocam. Cada PNG
+derivado contém apenas os pixels do seu componente, então não há pedaço da
+pose vizinha. Uso em jogo: `components/playerAnimation.ts`.
 
 Consequência prática: Leo usa a mesma animação de forehand independente do
 lado real da bola (esquerda/direita) ou se o motor classificaria o golpe como

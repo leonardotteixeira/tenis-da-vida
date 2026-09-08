@@ -24,6 +24,17 @@ export const DIFFICULTY_PARAMS: Record<Difficulty, DifficultyParams> = {
   insane: { maxMoveSpeed: 360, positionErrorMax: 8, hitErrorChance: 0.03, ballSpeedMultiplier: 1.5 },
 };
 
+/**
+ * Deliberately more forgiving than "easy" — used only when GameEngine is
+ * constructed with `tutorialMode: true` (see components/tutorial.ts). Not a
+ * selectable Difficulty: never appears in components/settings.ts's
+ * DIFFICULTIES list, so it can never reach the normal Settings UI or get
+ * persisted. Near-zero position error keeps Alice's returns landing right
+ * back at Leo (predictable, easy to reach); zero hit-error chance means her
+ * quality is never downgraded, so her pace stays consistent every rally.
+ */
+export const TUTORIAL_PARAMS: DifficultyParams = { maxMoveSpeed: 150, positionErrorMax: 10, hitErrorChance: 0, ballSpeedMultiplier: 0.85 };
+
 const QUALITY_DOWNGRADE: Record<"perfect" | "good" | "late", "good" | "late" | "miss"> = {
   perfect: "good",
   good: "late",
